@@ -25,13 +25,14 @@ from database import crud
 from database.session import db_session
 from helpers import in_window, local_now, money, utcnow
 from userbot import limits, safety
-from userbot.catalog import CATALOG_KEYWORDS, VOICE_REJECT
+from userbot.catalog import CATALOG_KEYWORDS, VOICE_REJECT, purchase_intent
 from userbot.coalescer import ConvKey, Coalescer
 from userbot.outbox import PRIORITY_DELIVERY, PRIORITY_NOTICE, PRIORITY_REPLY, Outbox, OutboxItem, PeerRef
 
 log = logging.getLogger("userbot.seller")
 
 SWEEP_INTERVAL = 30.0
+QR_COOLDOWN = timedelta(minutes=10)
 
 DELIVERY_TEMPLATE = (
     "✅ បានបញ្ជាក់ការបង់ប្រាក់រួច!\n\n"
@@ -220,7 +221,43 @@ class Seller:
                 text=reply,
             )
         )
+        await self._maybe_send_qr(peer_id, access_hash, batch, reply)
         return "queued"
+
+    async def _maybe_send_qr(self, peer_id: int, access_hash: int | None, batch: tuple[str, ...], reply: str) -> str:
+        """ចេតនាទិញវាយតាមអក្សរ → រកផលិតផល → `Catalog.handle_buy` (QR ពិត ដែលម្ចាស់ Upload)។
+
+        ប្រើ Order ក្នុង DB ជា cooldown មិនមែន cache ក្នុង memory៖ វារស់កាត់ restart ហើយ
+        រាំងស្តុកត្រូវកក់ ២ ដងសម្រាប់ការបញ្ជាទិញតែមួយ។ ជួរនេះបន្ថែមពី AI reply ទេ ហើយ
+        មាន Outbox របស់គណនីដដែលរាប់ budget (មិនឆ្លង chat ផ្ទាល់)។
+        """
+        if self.catalog is None:
+            return "no_catalog"
+        text = "\n".join(batch)
+        if not purchase_intent(text):
+            return "no_intent"
+        product_id = await self.catalog.resolve_purchase_target(text, reply=reply)
+        if product_id is None:
+            return "ambiguous"
+        async with db_session() as session:
+            pending = await crud.open_order_for_customer(
+                session, peer_id, product_id, account_id=self.account_id
+            )
+        if pending is not None and utcnow() - pending.created_at < QR_COOLDOWN:
+            return "qr_cooldown"
+        alert = await self.catalog.handle_buy(peer_id, product_id)
+        if alert:
+            self.outbox.enqueue(
+                OutboxItem(
+                    priority=PRIORITY_REPLY,
+                    seq=0,
+                    kind=limits.KIND_AI_REPLY,
+                    peer=PeerRef(peer_id, access_hash),
+                    text=alert,
+                )
+            )
+            return "buy_alert"
+        return "qr_sent"
 
     async def _generate(self, peer_id: int, batch: tuple[str, ...]) -> str | None:
         user_text = "\n".join(batch)
