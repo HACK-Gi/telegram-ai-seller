@@ -9,13 +9,16 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from admin_bot import keyboards, media, render
+from admin_bot.scope import Scope
 from config import QR_MEDIA_DIR
 from database import crud, db_session
+from database.models import QRCode
 from helpers import esc
 
 log = logging.getLogger("admin.qrcodes")
 
 router = Router()
+NOT_FOUND = "🚫 រកមិនឃើញ QR នេះក្នុងវិសាលភាពរបស់អ្នក"
 
 
 class AddQR(StatesGroup):
@@ -29,9 +32,19 @@ def target_id(callback: CallbackQuery) -> int:
     return int(callback.data.rsplit(":", 1)[-1])
 
 
-async def show_list(callback: CallbackQuery) -> None:
+async def guard_qr(callback: CallbackQuery, qr_id: int, scope: Scope) -> QRCode | None:
+    """IDOR guard — QR របស់ admin ផ្សេង មិនអាច មើល/កំណត់ Default/ភ្ជាប់/លុប បានទេ។"""
     async with db_session() as session:
-        qrs = await crud.list_qrcodes(session)
+        qr = await crud.get_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
+    if qr is None:
+        log.warning("IDOR: user=%s qr=%s ក្រៅវិសាលភាព", scope.admin_id, qr_id)
+        await callback.answer(NOT_FOUND, show_alert=True)
+    return qr
+
+
+async def show_list(callback: CallbackQuery, scope: Scope) -> None:
+    async with db_session() as session:
+        qrs = await crud.list_qrcodes(session, owner_admin_id=scope.owner_id)
     if callback.message is None:
         await callback.answer()
         return
@@ -44,15 +57,14 @@ async def show_list(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-async def show_qr(callback: CallbackQuery, qr_id: int, toast: str = "") -> None:
+async def show_qr(callback: CallbackQuery, qr_id: int, scope: Scope, toast: str = "") -> None:
+    qr = await guard_qr(callback, qr_id, scope)
+    if qr is None:
+        return
     async with db_session() as session:
-        qr = await crud.get_qrcode(session, qr_id)
-        if qr is None:
-            await callback.answer("រកមិនឃើញ QR", show_alert=True)
-            return
         card = render.qrcode_card(qr)
         markup = keyboards.qr_actions(qr)
-        file_id, name = qr.image_file_id, qr.name
+    file_id, name = qr.image_file_id, qr.name
     if callback.message is None:
         await callback.answer()
         return
@@ -65,9 +77,9 @@ async def show_qr(callback: CallbackQuery, qr_id: int, toast: str = "") -> None:
 # ---------------- បន័ែម ----------------
 
 @router.callback_query(F.data == "menu:qr")
-async def cb_qr_root(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_qr_root(callback: CallbackQuery, state: FSMContext, scope: Scope) -> None:
     await state.set_state(None)
-    await show_list(callback)
+    await show_list(callback, scope)
 
 
 @router.callback_query(F.data == "qr:add")
@@ -114,11 +126,15 @@ async def md_provider(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AddQR.account_info, F.text)
-async def md_account_info(message: Message, state: FSMContext) -> None:
+async def md_account_info(message: Message, state: FSMContext, scope: Scope) -> None:
     data = await state.get_data()
     async with db_session() as session:
         qr = await crud.create_qrcode(
-            session, name=data["qr_name"], provider=data["qr_provider"], account_info=message.text.strip()
+            session,
+            name=data["qr_name"],
+            provider=data["qr_provider"],
+            account_info=message.text.strip(),
+            owner_admin_id=scope.admin_id,
         )
         qr_id, markup = qr.id, keyboards.qr_actions(qr)
     await state.update_data(qr_id=qr_id)
@@ -163,13 +179,14 @@ async def generate_qr_image(bot, chat_id: int, qr_id: int) -> bool:
 
 
 @router.message(AddQR.image, F.photo)
-async def md_image(message: Message, state: FSMContext) -> None:
+async def md_image(message: Message, state: FSMContext, scope: Scope) -> None:
     data = await state.get_data()
     qr_id = data["qr_id"]
     file_id, path = await media.save_message_photo(message, QR_MEDIA_DIR, f"qr{qr_id}")
     async with db_session() as session:
-        qr = await crud.get_qrcode(session, qr_id)
+        qr = await crud.get_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
         if qr is None:
+            log.warning("IDOR: user=%s qr=%s image", scope.admin_id, qr_id)
             await message.answer("⛔ រកមិនឃើញ QR")
             await state.set_state(None)
             return
@@ -181,7 +198,7 @@ async def md_image(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AddQR.image, F.text)
-async def md_image_command(message: Message, state: FSMContext) -> None:
+async def md_image_command(message: Message, state: FSMContext, scope: Scope) -> None:
     data = await state.get_data()
     qr_id = data["qr_id"]
     command = message.text.strip().lower()
@@ -189,14 +206,14 @@ async def md_image_command(message: Message, state: FSMContext) -> None:
         ok = await generate_qr_image(message.bot, message.chat.id, qr_id)
         await state.set_state(None)
         async with db_session() as session:
-            qr = await crud.get_qrcode(session, qr_id)
+            qr = await crud.get_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
             markup = keyboards.qr_actions(qr) if qr is not None else None
         await message.answer("✅ បានបង្កើត QR PNG" if ok else "⛔ បង្កើតមិនបាន — Account Info ទទេ ឬ upload បរាជ័យ", reply_markup=markup)
         return
     if command in ("skip", "ទុក", "done"):
         await state.set_state(None)
         async with db_session() as session:
-            qr = await crud.get_qrcode(session, qr_id)
+            qr = await crud.get_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
             markup = keyboards.qr_actions(qr) if qr is not None else None
         await message.answer("⏭ រំលងរូបភាព (តាម <code>🔁 បង្កើតឡើងវិញ</code> ពេលក្រោយបាន)", reply_markup=markup)
         return
@@ -206,37 +223,44 @@ async def md_image_command(message: Message, state: FSMContext) -> None:
 # ---------------- សកម្មភាព ----------------
 
 @router.callback_query(F.data.startswith("qr:view:"))
-async def cb_view(callback: CallbackQuery) -> None:
-    await show_qr(callback, target_id(callback))
+async def cb_view(callback: CallbackQuery, scope: Scope) -> None:
+    await show_qr(callback, target_id(callback), scope)
 
 
 @router.callback_query(F.data.startswith("qr:default:"))
-async def cb_default(callback: CallbackQuery) -> None:
+async def cb_default(callback: CallbackQuery, scope: Scope) -> None:
     qr_id = target_id(callback)
+    if await guard_qr(callback, qr_id, scope) is None:
+        return
     async with db_session() as session:
-        await crud.set_default_qrcode(session, qr_id)
-        qrs = await crud.list_qrcodes(session)
+        await crud.set_default_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
+        qrs = await crud.list_qrcodes(session, owner_admin_id=scope.owner_id)
     if callback.message is not None:
         await callback.message.edit_text("⭐ បានកំណត់ QR លំនាំដើម", reply_markup=keyboards.qr_menu(qrs))
     await callback.answer("បានកំណត់ជា Default")
 
 
 @router.callback_query(F.data.startswith("qr:regen:"))
-async def cb_regen(callback: CallbackQuery) -> None:
+async def cb_regen(callback: CallbackQuery, scope: Scope) -> None:
     qr_id = target_id(callback)
+    if await guard_qr(callback, qr_id, scope) is None:
+        return
     ok = await generate_qr_image(callback.bot, callback.from_user.id, qr_id)
     await show_qr(
         callback,
         qr_id,
+        scope,
         toast="បានបង្កើត QR PNG ឡើងវិញ" if ok else "⛔ Account Info ទទេ ឬ upload បរាជ័យ",
     )
 
 
 @router.callback_query(F.data.startswith("qr:link:"))
-async def cb_link(callback: CallbackQuery) -> None:
+async def cb_link(callback: CallbackQuery, scope: Scope) -> None:
     qr_id = target_id(callback)
+    if await guard_qr(callback, qr_id, scope) is None:
+        return
     async with db_session() as session:
-        products, _total = await crud.list_products(session, page=1, per_page=20)
+        products, _total = await crud.list_products(session, page=1, per_page=20, owner_admin_id=scope.owner_id)
     rows = [[(f"#{item.id} {esc(item.name)}", f"qr:linkto:{qr_id}:{item.id}")] for item in products]
     rows.append([("⏭ ដកចេញ (គ្មានផលិតផល)", f"qr:linkto:{qr_id}:0"), ("⬅️ ត្រឡប់", f"qr:view:{qr_id}")])
     if callback.message is None:
@@ -248,42 +272,45 @@ async def cb_link(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-async def _assign_product(callback: CallbackQuery, qr_id: int, product_id: int) -> None:
+async def _assign_product(callback: CallbackQuery, qr_id: int, product_id: int, scope: Scope) -> None:
     async with db_session() as session:
-        qr = await crud.get_qrcode(session, qr_id)
+        qr = await crud.get_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
         if qr is None:
-            await callback.answer("រកមិនឃើញ QR", show_alert=True)
+            log.warning("IDOR: user=%s qr=%s assign", scope.admin_id, qr_id)
+            await callback.answer(NOT_FOUND, show_alert=True)
             return
-        qr.product_id = product_id or None
         product_name = ""
         if product_id:
-            product = await crud.get_product(session, product_id)
-            product_name = product.name if product else ""
+            product = await crud.get_product(session, product_id, owner_admin_id=scope.owner_id)
+            if product is None:
+                log.warning("IDOR: user=%s product=%s via qr=%s", scope.admin_id, product_id, qr_id)
+                await callback.answer("🔒 ផលិតផលនេះមិនមែនរបស់អ្នកទេ", show_alert=True)
+                return
+            product_name = product.name
+        qr.product_id = product_id or None
     await callback.answer(f"បានភ្ជាប់ → {product_name}" if product_id else "បានដកការភ្ជាប់")
     if callback.message is not None and callback.data and callback.data.startswith("qr:linkto:"):
-        await show_qr(callback, qr_id)
+        await show_qr(callback, qr_id, scope)
 
 
 @router.callback_query(F.data.startswith("qr:linkto:"))
-async def cb_linkto(callback: CallbackQuery) -> None:
+async def cb_linkto(callback: CallbackQuery, scope: Scope) -> None:
     parts = callback.data.split(":")
-    await _assign_product(callback, int(parts[2]), int(parts[3]))
+    await _assign_product(callback, int(parts[2]), int(parts[3]), scope)
 
 
 @router.callback_query(F.data.startswith("qr:assign:"))
-async def cb_assign(callback: CallbackQuery) -> None:
+async def cb_assign(callback: CallbackQuery, scope: Scope) -> None:
     """ភ្ជាប់ QR ពីផ្នែក 📦 ផលិតផល (products.cb_qrpick)។"""
     parts = callback.data.split(":")
-    await _assign_product(callback, int(parts[2]), int(parts[3]))
+    await _assign_product(callback, int(parts[2]), int(parts[3]), scope)
 
 
 @router.callback_query(F.data.startswith("qr:askdel:"))
-async def cb_ask_delete(callback: CallbackQuery) -> None:
+async def cb_ask_delete(callback: CallbackQuery, scope: Scope) -> None:
     qr_id = target_id(callback)
-    async with db_session() as session:
-        qr = await crud.get_qrcode(session, qr_id)
+    qr = await guard_qr(callback, qr_id, scope)
     if qr is None or callback.message is None:
-        await callback.answer("រកមិនឃើញ" if qr is None else "", show_alert=qr is None)
         return
     await callback.message.edit_text(
         f"🗑 លុប QR <b>{esc(qr.name)}</b> <code>#{qr.id}</code>?",
@@ -293,8 +320,10 @@ async def cb_ask_delete(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("qr:del:"))
-async def cb_delete(callback: CallbackQuery) -> None:
+async def cb_delete(callback: CallbackQuery, scope: Scope) -> None:
     qr_id = target_id(callback)
+    if await guard_qr(callback, qr_id, scope) is None:
+        return
     async with db_session() as session:
-        await crud.delete_qrcode(session, qr_id)
-    await show_list(callback)
+        await crud.delete_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
+    await show_list(callback, scope)

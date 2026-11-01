@@ -671,8 +671,13 @@ async def set_default_qrcode(session: AsyncSession, qr_id: int, *, owner_admin_i
     qr.is_default = True
 
 
-async def delete_qrcode(session: AsyncSession, qr_id: int) -> None:
-    await session.execute(delete(QRCode).where(QRCode.id == qr_id))
+async def delete_qrcode(session: AsyncSession, qr_id: int, *, owner_admin_id: int | None = None) -> None:
+    """លុប QR ក្នុងវិសាលភាពតែប៉ុណ្ណោះ — ID របស់អ្នកដទៃ នៅសល់ដដែល។"""
+    stmt = delete(QRCode).where(QRCode.id == qr_id)
+    clause = _owner_where(QRCode, owner_admin_id)
+    if clause is not None:
+        stmt = stmt.where(clause)
+    await session.execute(stmt)
 
 
 async def best_qrcode(
