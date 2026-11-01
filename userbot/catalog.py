@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ from telethon import Button
 from database import crud
 from database.models import Account
 from database.session import db_session
-from helpers import esc, money
+from helpers import esc, money, utcnow
 from sqlalchemy import select
 from userbot import limits
 from userbot.outbox import PRIORITY_REPLY, Outbox, OutboxItem, PeerRef
@@ -38,6 +39,60 @@ VOICE_REJECT = (
 )
 CATALOG_KEYWORDS = frozenset({"menu", "មេនុ", "សម្ភារៈ", "catalog", "list", "products", "ផលិតផល"})
 MAX_BUTTON_ROWS = 10
+
+# ជំហានទី ២ — ចេតនាទិញ/សុំ QR វាយតាមអក្សរ (គ្មាន button)។ ប្រើពាក្យច្បាស់លាស់ មិនមែនពាក្យតែមួយ
+# ព្រោះ «ទិញ» តែឯងអាចលេចក្នុង «មិនទិញទេ» ហើយ QR ខុស = ប្រាក់ចុះខុសគណនី។
+BUY_KEYWORDS = frozenset(
+    {
+        "ចង់ទិញ", "សុំទិញ", "ចង់យក", "សុំយក", "យកមួយ", "យក ១", "យកមួយគណនី",
+        "ទិញមួយ", "កម្មង់", "បញ្ជាទិញ", "order មួយ", "i want to buy", "i'll take",
+    }
+)
+QR_KEYWORDS = frozenset(
+    {"qr", "ទូទាត់", "បង់ប្រាក់", "បាញ់លុយ", "ផ្ទេរប្រាក់", "payment", "pay", "aba", "khqr", "transfer"}
+)
+
+
+def purchase_intent(text: str) -> bool:
+    """អតិថិជនវាយចេតនាទិញ ឬសុំ QR មែនទេ — ពាក្យឡាតាំងត្រូវគ្រប់ពាក្យ មិនមែនគ្រាន់តែតួអក្សរ។"""
+    lowered = (text or "").lower()
+    if not lowered.strip():
+        return False
+    return any(_mentions(lowered, word) for word in BUY_KEYWORDS | QR_KEYWORDS)
+
+
+def _mentions(lowered: str, word: str) -> bool:
+    if word.isascii():
+        return re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", lowered) is not None
+    return word in lowered
+
+
+def _match_tokens(product) -> tuple[str, ...]:
+    """អ្វីដែលអតិថិជនអាចវាយហៅផលិតផលនេះ — ឈ្មោះខ្មែរ/អង់គ្លេស ឬកូដ។"""
+    raw = (product.name, getattr(product, "name_en", "") or "", product.product_code or "")
+    return tuple(token for item in raw if (token := (item or "").strip().lower()))
+
+
+def _newest_mention(products: list, text: str) -> int | None:
+    """ការណែនាំចុងក្រោយបំផុតក្នុងសារ (បញ្ចប់ខាងស្តាំបំផុត)។
+
+    ពីរផលិតផលបញ្ចប់ត្រង់កន្លែងតែមួយ = មិនច្បាស់ → None ជាង QR ខុស។
+    """
+    lowered = (text or "").lower()
+    best_end, best_id, tie = -1, None, False
+    for product in products:
+        end = -1
+        for token in _match_tokens(product):
+            start = lowered.rfind(token)
+            if start >= 0:
+                end = max(end, start + len(token))
+        if end < 0:
+            continue
+        if end > best_end:
+            best_end, best_id, tie = end, product.id, False
+        elif end == best_end:
+            tie = True
+    return None if tie else best_id
 
 
 class Catalog:
@@ -186,6 +241,20 @@ class Catalog:
         return "⚠️ ម៉ឺនុនេះផុតកំណត់ — សូមចុច «menu» ម្តងទៀត", "", None
 
     # ---------- ទិញ: reserve + order + QR ----------
+    async def resolve_purchase_target(self, text: str, *, reply: str = "") -> int | None:
+        """ID ផលិតផលតែមួយដែលអតិថិជនចង់ទិញ ឬ None បើមិនច្បាស់ (ជំហានទី ២)។
+
+        លំដាប់៖ ឈ្មោះ/កូដក្នុងសារអតិថិជន → ក្នុងចម្លើយ AI (AI ថ្មីៗ រៀបចំឈ្មោះផលិតផល)
+        → បើហាងក្នុងវិសាលភាពមានផលិតផលតែមួយ → នោះតែមួយ គឺមិន ambiguity តែម្តង។
+        """
+        async with db_session() as session:
+            products = await self._visible_products(session)
+        for source in (text, reply):
+            product_id = _newest_mention(products, source)
+            if product_id is not None:
+                return product_id
+        return products[0].id if len(products) == 1 else None
+
     async def handle_buy(self, peer_id: int, product_id: int) -> str:
         async with db_session() as session:
             bind = await crud.set_customer_account(session, peer_id, self.account_id)
@@ -212,23 +281,42 @@ class Catalog:
                 await crud.cancel_order(session, order.id)
                 return "🔴 ស្តុកអស់បណ្តោះអាសន្ន — សូមសរសេរប្រាប់ខ្ញុំ ឬមើលផលិតផលផ្សេងបង 🙏"
             qr = await crud.best_qrcode(session, product.id)
+            no_qr = qr is None
+            if no_qr:
+                # វិធាន «គ្មាន QR → ជូនដំណឹងម្ចាស់ភ្លាម» — dedupe រក្សាទុកក្នុង DB រស់កាត់ restart
+                tell_owner = await crud.notice_once(
+                    session, f"noqr:{self.account_id}:{product.id}", bucket=utcnow().strftime("%Y-%m-%d")
+                )
+            else:
+                tell_owner = False
             total = money(product.final_price)
             customer = await crud.get_customer_by_telegram(session, peer_id)
             access_hash = customer.access_hash if customer else None
             order_id = order.id
             name = product.name
 
+        file_path = qr.image_path if qr and qr.image_path and Path(qr.image_path).exists() else None
+        if file_path:
+            pay_line = "1️⃣ បង់ប្រាក់តាម QR នេះ"
+        elif qr is not None and qr.account_info:
+            pay_line = "1️⃣ បង់ប្រាក់តាមគណនីខាងក្រោម"
+        else:
+            pay_line = "1️⃣ ខ្ញុំកំពុងរៀបចំព័ត៌មានបង់ប្រាក់ — សូមរង់ចាំបន្តិច 🙏"
         caption = (
             f"🛒 បញ្ជាទិញ <code>#{order_id}</code> — {name}\n"
             f"💰 សរុប: <b>{total}</b>\n\n"
-            "1️⃣ បង់ប្រាក់តាម QR នេះ\n"
+            f"{pay_line}\n"
             "2️⃣ ផ្ញើ <b>រូបភាព slip</b> មកក្នុង chat នេះ\n"
             "3️⃣ រង់ចាំម្ចាស់ផ្ទៀងផ្ទាត់ → Code ត្រូវប្រគល់ 🙏\n"
             "<i>ស្តុកត្រូវបានកក់សម្រាប់បញ្ជានេះ (reserve)</i>"
         )
-        file_path = qr.image_path if qr and qr.image_path and Path(qr.image_path).exists() else None
         if file_path is None and qr and qr.account_info:
             caption += f"\n🏦 {qr.account_info}"
+        if tell_owner:
+            await self._notify_owner(
+                f"🔴 គ្មាន QR សម្រាប់ «{name}» (ផលិតផល #{product_id}) — បញ្ជាទិញ #{order_id} មិនមានរបៀបបង់ប្រាក់\n"
+                "សូម Upload រូបភាព QR ក្នុង Panel → «QR» ជាបន្ទាន់ 🙏"
+            )
         self.outbox.enqueue(
             OutboxItem(
                 priority=PRIORITY_REPLY,
