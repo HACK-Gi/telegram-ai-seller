@@ -168,13 +168,13 @@ def qr_menu(qrs: Sequence[QRCode]) -> InlineKeyboardMarkup:
         [(("⭐ " if item.is_default else "▫️ ") + f"{esc(item.name)} [{esc(item.provider)}]", f"qr:view:{item.id}")]
         for item in qrs
     ]
-    rows.append([("➕ បន័ែម QR", "qr:add"), ("🧩 បង្កើត QR ពី Account Info", "qr:newgen")])
+    rows.append([("➕ បន័ែម QR (Upload រូបភាព)", "qr:add")])
     rows.append([BACK_MAIN])
     return build(rows)
 
 
 def qr_actions(qr: QRCode) -> InlineKeyboardMarkup:
-    rows = [[("⭐ ធ្វើជា Default", f"qr:default:{qr.id}"), ("🔁 បង្កើតរូប QR ឡើងវិញ", f"qr:regen:{qr.id}")]]
+    rows = [[("⭐ ធ្វើជា Default", f"qr:default:{qr.id}"), ("🖼 ប្ដូររូបភាព QR", f"qr:image:{qr.id}")]]
     rows.append([("📦 ភ្ជាប់ផលិតផល", f"qr:link:{qr.id}"), ("🗑 លុប", f"qr:askdel:{qr.id}")])
     rows.append([("⬅️ បញ្ជី QR", "menu:qr"), BACK_MAIN])
     return build(rows)

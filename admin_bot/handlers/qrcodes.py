@@ -1,4 +1,9 @@
-"""💳 QR Code ទូទាត់ — ABA / Bakong / Wing / ACLEDA រួមទាំងការបង្កើត PNG ស្វ័យប្រវត្តិ។"""
+"""💳 QR Code ទូទាត់ — ABA / Bakong / Wing / ACLEDA **Upload រូបភាពពិតតែប៉ុណ្ណោះ**។
+
+គ្មានការបង្កើត PNG ដោយស្វ័យប្រវត្តិទេ — អតិថិជនបង់ប្រាក់ចូលគណនីធនាគារពិត ដូច្នេះរូប QR
+ត្រូវ Download ពី App ធនាគារ រួច Upload ចូល Panel (QR ដែល render ពីអត្ថបទអាចខុសលេខបញ្ជី
+→ ប្រាក់ចូលកន្លែងខុស ជាកំហុសលើលុយពិត មិនមែនត្រឹមទិន្នន័យទេ)។
+"""
 from __future__ import annotations
 
 import logging
@@ -85,25 +90,11 @@ async def cb_qr_root(callback: CallbackQuery, state: FSMContext, scope: Scope) -
 @router.callback_query(F.data == "qr:add")
 async def cb_add(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AddQR.name)
-    await state.update_data(qr_auto_gen=False)
     if callback.message is None:
         await callback.answer()
         return
     await callback.message.answer(
         "💳 <b>បន័ែម QR ថ្មី</b>\n\n📛 ឈ្មោះ (ឧ. ABA របស់ខ្ញុំ):"
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "qr:newgen")
-async def cb_add_autogen(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AddQR.name)
-    await state.update_data(qr_auto_gen=True)
-    if callback.message is None:
-        await callback.answer()
-        return
-    await callback.message.answer(
-        "🧩 <b>បង្កើត QR ស្វ័យប្រវត្តិ</b> (PNG ពីអត្ថបទ Account Info)\n\n📛 ឈ្មោះ:"
     )
     await callback.answer()
 
@@ -120,8 +111,8 @@ async def md_provider(message: Message, state: FSMContext) -> None:
     await state.update_data(qr_provider=message.text.strip().upper())
     await state.set_state(AddQR.account_info)
     await message.answer(
-        "🔖 <b>Account Info</b> — អត្ថបទដែល QR ត្រូវផ្ទុក (ឧ. payment URL ពី ABA ឬលេខបញ្ជី Bank)\n"
-        "<i>អត្ថបទនេះត្រូវ render ជា QR PNG ពេលចុច 🧩 បង្កើតឡើងវិញ</i>:"
+        "🔖 <b>Account Info</b> — លេខគណនី/ឈ្មោះដែលអតិថិជនត្រូវប្រើ (ឧ. <code>012 345 678 · ABA · Sok Dara</code>)\n"
+        "<i>វាជាអត្ថបទជំនួស ពេលរូបភាព QR មិនទាន់អាចប្រើបាន — មិនមែនជា source សម្រាប់ render PNG ទេ</i>:"
     )
 
 
@@ -139,43 +130,13 @@ async def md_account_info(message: Message, state: FSMContext, scope: Scope) -> 
         qr_id, markup = qr.id, keyboards.qr_actions(qr)
     await state.update_data(qr_id=qr_id)
 
-    if data.get("qr_auto_gen"):
-        await generate_qr_image(message.bot, message.chat.id, qr_id)
-        await state.set_state(None)
-        await message.answer(f"✅ បង្កើត QR <code>#{qr_id}</code> រួច", reply_markup=markup)
-        return
-
     await state.set_state(AddQR.image)
     await message.answer(
         f"✅ បង្កើត QR <code>#{qr_id}</code>\n\n"
-        "🖼 ផ្ញើ<b>រូបភាព QR</b> របស់អ្នក ឬសរសេរ <code>gen</code> ដើម្បីបង្កើត PNG ពី Account Info\n"
-        "(ឬ <code>skip</code> ទុកទទេ)",
+        "🖼 ផ្ញើ<b>រូបភាព QR</b> ដែលបង Download ពី App ធនាគារ (ABA/Bakong/Wing) មកក្នុង chat នេះ\n"
+        "(ឬ <code>skip</code> ទុកទទេ — userbot នឹងមិនផ្ញើរូបណាទេ រហូតដល់បង Upload)",
         reply_markup=markup,
     )
-
-
-async def generate_qr_image(bot, chat_id: int, qr_id: int) -> bool:
-    """បង្កើត PNG ពី account_info → upload ទៅ Telegram → រក្សាទុក file_id + path។"""
-    async with db_session() as session:
-        qr = await crud.get_qrcode(session, qr_id)
-        if qr is None or not qr.account_info:
-            return False
-        payload = qr.account_info
-        name = qr.name
-    destination = QR_MEDIA_DIR / f"qr{qr_id}.png"
-    media.render_qr_png(payload, destination)
-    try:
-        file_id, path = await media.upload_local_photo(bot, chat_id, str(destination), f"🧾 {name}")
-    except Exception as exc:  # noqa: BLE001 - កុំឱ្យ Panel ដួលពេល upload បរាជ័យ
-        log.exception("បង្កើត QR PNG បរាជ័យ")
-        return False
-    async with db_session() as session:
-        qr = await crud.get_qrcode(session, qr_id)
-        if qr is None:
-            return False
-        qr.image_file_id = file_id
-        qr.image_path = path
-    return True
 
 
 @router.message(AddQR.image, F.photo)
@@ -202,22 +163,22 @@ async def md_image_command(message: Message, state: FSMContext, scope: Scope) ->
     data = await state.get_data()
     qr_id = data["qr_id"]
     command = message.text.strip().lower()
-    if command == "gen":
-        ok = await generate_qr_image(message.bot, message.chat.id, qr_id)
-        await state.set_state(None)
-        async with db_session() as session:
-            qr = await crud.get_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
-            markup = keyboards.qr_actions(qr) if qr is not None else None
-        await message.answer("✅ បានបង្កើត QR PNG" if ok else "⛔ បង្កើតមិនបាន — Account Info ទទេ ឬ upload បរាជ័យ", reply_markup=markup)
-        return
     if command in ("skip", "ទុក", "done"):
         await state.set_state(None)
         async with db_session() as session:
             qr = await crud.get_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
             markup = keyboards.qr_actions(qr) if qr is not None else None
-        await message.answer("⏭ រំលងរូបភាព (តាម <code>🔁 បង្កើតឡើងវិញ</code> ពេលក្រោយបាន)", reply_markup=markup)
+            has_image = qr is not None and bool(qr.image_file_id)
+        if has_image:
+            await message.answer("⏭ ទុករូបភាពដើម", reply_markup=markup)
+            return
+        await message.answer(
+            "⏭ រំលងរូបភាព — <b>userbot នឹងមិនផ្ញើ QR ឱ្យអតិថិជនទេ</b> រហូតដល់បង Upload រូបភាព"
+            " (គណនីនេះបាញ់ជូនដំណឹងម្ចាស់ភ្លាមពេលអតិថិជនចង់ទិញ)",
+            reply_markup=markup,
+        )
         return
-    await message.answer("ℹ️ ផ្ញើរូបភាព ឬសរសេរ <code>gen</code> / <code>skip</code>")
+    await message.answer("ℹ️ សូម<b>ផ្ញើរូបភាព QR</b> ឬសរសេរ <code>skip</code> ដើម្បីទុកដើម")
 
 
 # ---------------- សកម្មភាព ----------------
@@ -240,18 +201,19 @@ async def cb_default(callback: CallbackQuery, scope: Scope) -> None:
     await callback.answer("បានកំណត់ជា Default")
 
 
-@router.callback_query(F.data.startswith("qr:regen:"))
-async def cb_regen(callback: CallbackQuery, scope: Scope) -> None:
+@router.callback_query(F.data.startswith("qr:image:"))
+async def cb_change_image(callback: CallbackQuery, state: FSMContext, scope: Scope) -> None:
+    """រូប QR ខុស/បាត់ → ផ្ញើរូបថ្មីពី App ធនាគារ (គ្មាន render ខ្លួនឯងទេ)។"""
     qr_id = target_id(callback)
     if await guard_qr(callback, qr_id, scope) is None:
         return
-    ok = await generate_qr_image(callback.bot, callback.from_user.id, qr_id)
-    await show_qr(
-        callback,
-        qr_id,
-        scope,
-        toast="បានបង្កើត QR PNG ឡើងវិញ" if ok else "⛔ Account Info ទទេ ឬ upload បរាជ័យ",
-    )
+    await state.update_data(qr_id=qr_id)
+    await state.set_state(AddQR.image)
+    if callback.message is not None:
+        await callback.message.edit_text(
+            f"🖼 ផ្ញើ<b>រូបភាព QR ថ្មី</b>សម្រាប់ <code>#{qr_id}</code> (រូបដែល Download ពី App ធនាគារ) ឬ <code>skip</code> ទុកដដែល"
+        )
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("qr:link:"))

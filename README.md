@@ -81,7 +81,7 @@ WantedBy=multi-user.target
 |---|---|
 | 📦 ផលិតផល | បង្កើត/កែ/លុប, បញ្ចូល Stock (auto codes `{CODE}-S001` ឬ manual), រូបភាព, discount, ចម្រោះតាមប្រភេទ, ស្វែងរក |
 | 📦 ប្រភេទអីវ៉ាន់ | ៧ ប្រភេទលំនាំដើម + «ទូទៅ» — បន័ែម/កែ/prefix/បិទ-បើក/លុប (រាំងបើមានផលិតផល) |
-| 💳 QR Code | Upload រូប QR ឬបង្កើត PNG ពី Account Info, កំណត់ Default, ភ្ជាប់នឹងផលិតផល |
+| 💳 QR Code | **Upload រូបភាព QR ពិតពី App ធនាគារតែប៉ុណ្ណោះ** (គ្មានបង្កើត PNG ស្វ័យប្រវត្តិ), កំណត់ Default, ភ្ជាប់នឹងផលិតផល |
 | 🧠 System Prompt | កែ Persona, Few-shot, សាកល្បង AI ភ្លាម |
 | 🛒 Orders | Tab ស្ថានភាព, មើលស្លីប, **ផ្ទៀងផ្ទាត់ + បញ្ចេញ Code**, បោះបង់, កំណត់ត្រា |
 | 👥 អតិថិជន | CRM៖ Tag, កំណត់ត្រា, Pause AI ម្នាក់ៗ, Block, សម្អាត Context |

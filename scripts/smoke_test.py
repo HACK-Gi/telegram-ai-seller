@@ -317,20 +317,31 @@ async def main() -> int:
         elif smoke_product.product_code and not generated[0].startswith(smoke_product.product_code):
             panel.errors.append(f"✗ code ថ្មីមិនតាម prefix ({generated[0]})")
 
-    print("— QR ស្វ័យប្រវត្តិ —")
-    await panel.cb("qr:newgen")
+    print("— QR (Upload only) —")
+    await panel.cb("qr:add")
     await panel.msg("ABA SMOKE")
     await panel.msg("aba")
-    await panel.msg("https://pay.aba.example/smoke")
+    await panel.msg("012 345 678 · ABA · Sok Dara")
+    await panel.msg("skip")
     async with db_session() as session:
         qrs = await crud.list_qrcodes(session)
         qr_id = qrs[0].id if qrs else None
     if qr_id is None:
         panel.errors.append("✗ រកមិនឃើញ QR ក្នុង DB")
     else:
+        async with db_session() as session:
+            qr = await crud.get_qrcode(session, qr_id)
+        if qr is not None and qr.image_file_id:
+            panel.errors.append(f"✗ QR មានរូបដោយស្វ័យប្រវត្តិ ({qr.image_file_id}) — ត្រូវទទេ")
+        await panel.cb(f"qr:image:{qr_id}")
+        await panel.msg("skip")
         await panel.cb(f"qr:default:{qr_id}")
         await panel.cb(f"qr:view:{qr_id}")
         await panel.cb(f"qr:link:{qr_id}")
+    for gone in ("qr:newgen", f"qr:regen:{qr_id or 1}"):
+        handled = await panel.cb(gone, unhandled_ok=True, expect_reply=False)
+        if handled is not UNHANDLED:
+            panel.errors.append(f"✗ វិធីបង្កើត QR ស្វ័យប្រវត្តិ នៅមាន ({gone})")
 
     print("— Order ដោយដៃ → Confirm & Deliver —")
     await panel.cb("ord:add")

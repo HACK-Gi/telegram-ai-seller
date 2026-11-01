@@ -8,11 +8,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import qrcode
 from aiogram import Bot
-from aiogram.types import FSInputFile, Message
+from aiogram.types import Message
 
-from config import PRODUCT_MEDIA_DIR, QR_MEDIA_DIR
 from helpers import esc
 
 log = logging.getLogger("admin.media")
@@ -42,20 +40,3 @@ async def send_photo_to_admin(bot: Bot, chat_id: int, file_id: str, caption: str
     except Exception as exc:  # TelegramAPIError / រូបបាត់
         log.warning("មិនអាចផ្ញើរូប %s បាន: %s", file_id[:16], exc)
         await bot.send_message(chat_id=chat_id, text=f"⚠️ រូបភាពមិនអាចបើកបានទេ ({esc(caption)})")
-
-
-async def upload_local_photo(bot: Bot, chat_id: int, path: str, caption: str) -> tuple[str, str]:
-    """Upload ឯកសារក្នុង disk ទៅ Telegram ត្រឡប់ (file_id, path) — ប្រើសម្រាប់ QR ដែលបង្កើតស្វ័យប្រវត្តិ។"""
-    file = Path(path)
-    uploaded = await bot.send_photo(chat_id=chat_id, photo=FSInputFile(file), caption=caption)
-    return uploaded.photo[-1].file_id, str(file)
-
-
-def render_qr_png(payload: str, destination: Path) -> Path:
-    """បង្កើត PNG ពី QR (ABA/Bakong ជាអក្សរ payload ឬ URL)។"""
-    builder = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=2)
-    builder.add_data(payload)
-    builder.make(fit=True)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    builder.make_image(fill_color="black", back_color="white").save(destination)
-    return destination
