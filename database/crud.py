@@ -789,8 +789,16 @@ async def set_customer_flag(
         await session.execute(update(Customer).where(Customer.id == customer_pk).values(**values))
 
 
-async def pause_all_customers(session: AsyncSession, paused: bool) -> int:
-    result = await session.execute(update(Customer).values(ai_paused=paused))
+async def pause_all_customers(
+    session: AsyncSession, paused: bool, *, account_ids: tuple[int, ...] | None = None
+) -> int:
+    """`account_ids=None` = គ្រប់អតិថិជន (Owner) — staff ត្រូវតែបញ្ជូនវិសាលភាពរបស់ខ្លួន។"""
+    stmt = update(Customer).values(ai_paused=paused)
+    if account_ids is not None:
+        if no_access(account_ids):
+            return 0
+        stmt = stmt.where(Customer.account_id.in_(account_ids))
+    result = await session.execute(stmt)
     return int(result.rowcount or 0)
 
 
