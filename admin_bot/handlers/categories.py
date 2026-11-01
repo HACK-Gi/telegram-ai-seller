@@ -1,6 +1,8 @@
 """📦 ប្រភេទអីវ៉ាន់ (Categories) — ម៉ឺនុគ្រប់គ្រង + CRUD + ពាក្យសັ່ងខ្លី។"""
 from __future__ import annotations
 
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
@@ -8,11 +10,14 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from admin_bot import keyboards
+from admin_bot.owner_gate import OwnerOnly
+from admin_bot.scope import Scope
 from database import crud, db_session
 from database.models import Category
 from helpers import esc
 
 router = Router()
+log = logging.getLogger("admin.categories")
 
 
 class AddCategory(StatesGroup):
@@ -72,12 +77,19 @@ def category_card(category: Category, count: int) -> str:
     )
 
 
-async def show_manager(event: Message | CallbackQuery) -> None:
+async def show_manager(event: Message | CallbackQuery, scope: Scope) -> None:
     async with db_session() as session:
         categories = await crud.list_all_categories(session)
-        counts = await crud.category_product_counts(session)
+        counts = await crud.category_product_counts(session, owner_admin_id=scope.owner_id)
+    if not scope.is_owner:
+        # taxonomy នៅ global ដដែល — staff មើលឃើញតែប្រភេទដែលមានផលិតផលរបស់ខ្លួន
+        categories = [item for item in categories if counts.get(item.id)]
     text = "📦 <b>ប្រភេទអីវ៉ាន់</b>\n<i>ជ្រើសរើសដើម្បី កែ/បិទ/លុប ឬ ➕ បន័ែមថ្មី</i>"
-    markup = keyboards.category_manager(categories, counts)
+    if not categories:
+        text = ("📦 <b>ប្រភេទអីវ៉ាន់</b>\n"
+                "<i>មិនមានប្រភេទដែលមានផលិតផលរបស់អ្នកទេ — ប្រភេទជាទិន្នន័យរួម "
+                "(សូមម្ចាស់បន្ថែម) ប៉ុន្តែអ្នកនៅតែជ្រើសរើសវាពេល ➕ បន័ែមផលិតផលបាន</i>")
+    markup = keyboards.category_manager(categories, counts, can_manage=scope.is_owner)
     if isinstance(event, CallbackQuery):
         if event.message is None:
             await event.answer()
@@ -91,28 +103,32 @@ async def show_manager(event: Message | CallbackQuery) -> None:
 # ---------------- ម៉ឺនុ ----------------
 
 @router.callback_query(F.data == "menu:categories")
-async def cb_categories_root(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_categories_root(callback: CallbackQuery, state: FSMContext, scope: Scope) -> None:
     await state.set_state(None)
-    await show_manager(callback)
+    await show_manager(callback, scope)
 
 
 @router.message(Command("categories"))
-async def cmd_categories(message: Message, state: FSMContext) -> None:
+async def cmd_categories(message: Message, state: FSMContext, scope: Scope) -> None:
     await state.set_state(None)
-    await show_manager(message)
+    await show_manager(message, scope)
 
 
 @router.callback_query(F.data.startswith("cat:view:"))
-async def cb_category_view(callback: CallbackQuery) -> None:
+async def cb_category_view(callback: CallbackQuery, scope: Scope) -> None:
     category_id = target_id(callback)
     async with db_session() as session:
         category = await crud.get_category(session, category_id)
         if category is None:
             await callback.answer("រកមិនឃើញ", show_alert=True)
             return
-        counts = await crud.category_product_counts(session)
+        counts = await crud.category_product_counts(session, owner_admin_id=scope.owner_id)
+        if not scope.is_owner and not counts.get(category.id):
+            log.info("IDOR: user=%s cat=%s ក្រៅវិសាលភាព", scope.admin_id, category_id)
+            await callback.answer("🔒 ប្រភេទនេះគ្មានផលិតផលរបស់អ្នកទេ", show_alert=True)
+            return
         card = category_card(category, counts.get(category.id, 0))
-        markup = keyboards.category_actions(category, counts.get(category.id, 0))
+        markup = keyboards.category_actions(category, counts.get(category.id, 0), can_manage=scope.is_owner)
     if callback.message is None:
         await callback.answer()
         return
@@ -120,8 +136,8 @@ async def cb_category_view(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("cat:toggle:"))
-async def cb_category_toggle(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("cat:toggle:"), OwnerOnly())
+async def cb_category_toggle(callback: CallbackQuery, scope: Scope) -> None:
     category_id = target_id(callback)
     async with db_session() as session:
         category = await crud.get_category(session, category_id)
@@ -131,7 +147,7 @@ async def cb_category_toggle(callback: CallbackQuery) -> None:
         category.is_active = not category.is_active
         active = category.is_active
     await callback.answer("បានបើកប្រភេទ" if active else "បានបិទប្រភេទ")
-    await cb_category_view(callback)
+    await cb_category_view(callback, scope)
 
 
 # ---------------- បន័ែមថ្មី ----------------
@@ -149,17 +165,17 @@ async def _start_add(event: Message | CallbackQuery, state: FSMContext) -> None:
         await event.answer(ADD_LABELS["code"])
 
 
-@router.callback_query(F.data == "cat:add")
+@router.callback_query(F.data == "cat:add", OwnerOnly())
 async def cb_category_add(callback: CallbackQuery, state: FSMContext) -> None:
     await _start_add(callback, state)
 
 
-@router.message(Command("addcategory"))
+@router.message(Command("addcategory"), OwnerOnly())
 async def cmd_add_category(message: Message, state: FSMContext) -> None:
     await _start_add(message, state)
 
 
-@router.message(AddCategory.code, F.text)
+@router.message(AddCategory.code, F.text, OwnerOnly())
 async def md_add_code(message: Message, state: FSMContext) -> None:
     code = message.text.strip().lower().replace(" ", "_")
     if not code or not code.replace("_", "").isalnum():
@@ -174,7 +190,7 @@ async def md_add_code(message: Message, state: FSMContext) -> None:
     await message.answer(ADD_LABELS["name_kh"])
 
 
-@router.message(AddCategory.name_kh, F.text)
+@router.message(AddCategory.name_kh, F.text, OwnerOnly())
 async def md_add_name_kh(message: Message, state: FSMContext) -> None:
     name = message.text.strip()
     if not name:
@@ -223,30 +239,30 @@ async def _finish_add(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(AddCategory.name_en, F.text)
+@router.message(AddCategory.name_en, F.text, OwnerOnly())
 async def md_add_name_en(message: Message, state: FSMContext) -> None:
     await _add_step(message, state, "name_en", message.text.strip())
 
 
-@router.message(AddCategory.icon, F.text)
+@router.message(AddCategory.icon, F.text, OwnerOnly())
 async def md_add_icon(message: Message, state: FSMContext) -> None:
     await _add_step(message, state, "icon", message.text.strip())
 
 
-@router.message(AddCategory.prefix, F.text)
+@router.message(AddCategory.prefix, F.text, OwnerOnly())
 async def md_add_prefix(message: Message, state: FSMContext) -> None:
     await _add_step(message, state, "prefix", message.text.strip())
 
 
-@router.message(AddCategory.description, F.text)
+@router.message(AddCategory.description, F.text, OwnerOnly())
 async def md_add_description(message: Message, state: FSMContext) -> None:
     await _add_step(message, state, "description", message.text.strip())
 
 
 # ---------------- កែ ----------------
 
-@router.callback_query(F.data.startswith("cat:edit:"))
-async def cb_category_edit(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("cat:edit:"), OwnerOnly())
+async def cb_category_edit(callback: CallbackQuery, scope: Scope) -> None:
     category_id = target_id(callback)
     async with db_session() as session:
         category = await crud.get_category(session, category_id)
@@ -260,7 +276,7 @@ async def cb_category_edit(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("cat:f:"))
+@router.callback_query(F.data.startswith("cat:f:"), OwnerOnly())
 async def cb_category_field(callback: CallbackQuery, state: FSMContext) -> None:
     parts = callback.data.split(":")
     field, category_id = parts[2], int(parts[3])
@@ -273,8 +289,8 @@ async def cb_category_field(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(EditCategory.value, F.text)
-async def md_category_field(message: Message, state: FSMContext) -> None:
+@router.message(EditCategory.value, F.text, OwnerOnly())
+async def md_category_field(message: Message, state: FSMContext, scope: Scope) -> None:
     data = await state.get_data()
     field = data["edit_cat_field"]
     category_id = data["edit_cat"]
@@ -303,18 +319,18 @@ async def md_category_field(message: Message, state: FSMContext) -> None:
             await state.set_state(None)
             return
         await crud.update_category(session, category_id, **values)
-        counts = await crud.category_product_counts(session)
+        counts = await crud.category_product_counts(session, owner_admin_id=scope.owner_id)
         fresh = await crud.get_category(session, category_id)
         card = category_card(fresh, counts.get(category_id, 0)) if fresh else "⛔ បាត់"
-        markup = keyboards.category_actions(fresh, counts.get(category_id, 0)) if fresh else None
+        markup = keyboards.category_actions(fresh, counts.get(category_id, 0), can_manage=scope.is_owner) if fresh else None
     await state.set_state(None)
     await message.answer(f"✅ បានរក្សាទុក\n{card}", reply_markup=markup)
 
 
 # ---------------- លុប ----------------
 
-@router.callback_query(F.data.startswith("cat:askdel:"))
-async def cb_category_ask_delete(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("cat:askdel:"), OwnerOnly())
+async def cb_category_ask_delete(callback: CallbackQuery, scope: Scope) -> None:
     category_id = target_id(callback)
     async with db_session() as session:
         category = await crud.get_category(session, category_id)
@@ -329,8 +345,8 @@ async def cb_category_ask_delete(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("cat:del:"))
-async def cb_category_delete(callback: CallbackQuery) -> None:
+@router.callback_query(F.data.startswith("cat:del:"), OwnerOnly())
+async def cb_category_delete(callback: CallbackQuery, scope: Scope) -> None:
     category_id = target_id(callback)
     async with db_session() as session:
         result = await crud.delete_category(session, category_id)
@@ -340,16 +356,16 @@ async def cb_category_delete(callback: CallbackQuery) -> None:
         await callback.answer("មានផលិតផលកំពុងប្រើប្រភេទនេះ — លុប/ផ្លាស់ផលិតផលជាមុនសិន", show_alert=True)
     else:
         await callback.answer("រកមិនឃើញ", show_alert=True)
-    await show_manager(callback)
+    await show_manager(callback, scope)
 
 
 # ---------------- /lowstock ----------------
 
 @router.message(Command("lowstock"))
-async def cmd_lowstock(message: Message) -> None:
+async def cmd_lowstock(message: Message, scope: Scope) -> None:
     async with db_session() as session:
         threshold = int(await crud.get_setting(session, "stock_alert_threshold") or 5)
-        rows = await crud.low_stock_products(session, threshold)
+        rows = await crud.low_stock_products(session, threshold, owner_admin_id=scope.owner_id)
     if not rows:
         await message.answer(f"✅ គ្មានផលិតផល Stock តិចជាង <b>{threshold}</b> ទេ")
         return

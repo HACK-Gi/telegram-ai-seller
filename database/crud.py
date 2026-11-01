@@ -334,10 +334,14 @@ async def delete_category(session: AsyncSession, category_id: int) -> str:
     return "deleted"
 
 
-async def category_product_counts(session: AsyncSession) -> dict[int, int]:
-    rows = await session.execute(
-        select(Product.category_id, func.count(Product.id)).where(Product.category_id.is_not(None)).group_by(Product.category_id)
-    )
+async def category_product_counts(
+    session: AsyncSession, *, owner_admin_id: int | None = None
+) -> dict[int, int]:
+    """រាប់ផលិតផលក្នុងប្រភេទនីមួយៗ — `owner_admin_id` = រាប់តែផលិតផលរបស់ admin នោះ។"""
+    stmt = select(Product.category_id, func.count(Product.id)).where(Product.category_id.is_not(None))
+    if owner_admin_id is not None:
+        stmt = stmt.where(Product.owner_admin_id == owner_admin_id)
+    rows = await session.execute(stmt.group_by(Product.category_id))
     return {int(cid): int(count) for cid, count in rows.all() if cid is not None}
 
 

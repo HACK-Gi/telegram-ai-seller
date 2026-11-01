@@ -99,7 +99,9 @@ def categories_filter_menu(categories: Sequence[Category]) -> InlineKeyboardMark
     return build(rows)
 
 
-def category_manager(categories: Sequence[Category], counts: dict[int, int]) -> InlineKeyboardMarkup:
+def category_manager(
+    categories: Sequence[Category], counts: dict[int, int], *, can_manage: bool = True
+) -> InlineKeyboardMarkup:
     rows = [
         [
             (
@@ -109,22 +111,26 @@ def category_manager(categories: Sequence[Category], counts: dict[int, int]) -> 
         ]
         for item in categories
     ]
-    rows.append([("➕ បន័ែមប្រភេទ", "cat:add")])
+    if can_manage:
+        rows.append([("➕ បន័ែមប្រភេទ", "cat:add")])
     rows.append([("🏷 ចម្រោះផលិតផល", "prod:categories"), ("⬅️ ផលិតផល", "menu:products"), BACK_MAIN])
     return build(rows)
 
 
-def category_actions(category: Category, count: int) -> InlineKeyboardMarkup:
-    return build(
-        [
-            [("✏️ កែព័ត៌មាន", f"cat:edit:{category.id}"), (f"📦 មើលផលិតផល ({count})", f"prod:filter:{category.id}")],
+def category_actions(
+    category: Category, count: int, *, can_manage: bool = True
+) -> InlineKeyboardMarkup:
+    rows = [[(f"📦 មើលផលិតផល ({count})", f"prod:filter:{category.id}")]]
+    if can_manage:
+        rows[0].insert(0, ("✏️ កែព័ត៌មាន", f"cat:edit:{category.id}"))
+        rows.append(
             [
                 ("⏯ បិទ/បើក", f"cat:toggle:{category.id}"),
                 ("🗑 លុប", f"cat:askdel:{category.id}"),
-            ],
-            [("⬅️ បញ្ជីប្រភេទ", "menu:categories"), BACK_MAIN],
-        ]
-    )
+            ]
+        )
+    rows.append([("⬅️ បញ្ជីប្រភេទ", "menu:categories"), BACK_MAIN])
+    return build(rows)
 
 
 def category_fields(category: Category) -> InlineKeyboardMarkup:
