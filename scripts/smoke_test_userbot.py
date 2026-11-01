@@ -86,6 +86,17 @@ async def wait_until(pred, timeout: float = 6.0) -> bool:
     return pred()
 
 
+async def wait_async(fn, timeout: float = 6.0):
+    """ដូច wait_until ប៉ុន្តែ `fn` ជា async — ត្រឡប់តម្លៃដំបូងដែលមិនមែន None (ឧ. async DB read)។"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        value = await fn()
+        if value is not None or loop.time() >= deadline:
+            return value
+        await asyncio.sleep(0.05)
+
+
 # ---------- MockSender ----------
 class FloodWaitError(Exception):
     """ឈ្មោះ class ត្រូវតែដូច Telethon ពិត (flood_seconds ពិនិត្យតាម __name__) — .seconds។"""
@@ -338,10 +349,15 @@ async def test_seller_flow() -> None:
     if sent:
         peer_id, text = harness.sender.sent[0]
         check("តបទៅអតិថិជនត្រឹម", peer_id == customer and "សួស្តីបង" in text)
-    async with db_session() as session:
-        rows = await crud.get_history(session, customer, account_id=account.id)
-        check("assistant row ក្រោយផ្ញើជោគជ័យ", len(rows) == 2 and rows[-1][0] == "assistant")
-        check("typing indicator ត្រូវបានហៅ", len(harness.sender.typing_calls) >= 1)
+
+    async def settled_history():
+        async with db_session() as session:
+            rows = await crud.get_history(session, customer, account_id=account.id)
+        return rows if len(rows) == 2 else None
+
+    rows = await wait_async(settled_history)
+    check("assistant row ក្រោយផ្ញើជោគជ័យ", rows is not None and rows[-1][0] == "assistant")
+    check("typing indicator ត្រូវបានហៅ", len(harness.sender.typing_calls) >= 1)
 
     # conflict: customer របស់គណនីផ្សេងសរសេរមក
     other_customer = 810000002
