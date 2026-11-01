@@ -907,6 +907,74 @@ async def test_text_buy_qr() -> None:
     qr_image.unlink(missing_ok=True)
 
 
+async def test_qr_account_ladder() -> None:
+    print("\n[15] QR Ladder — QR ភ្ជាប់គណនីឈ្នះ QR ផលិតផល និង QR ទូទៅ (លើផ្លូវទិញពិត)")
+    owner_img = ROOT / "data" / "smoke_qr_owner.png"
+    acct_img = ROOT / "data" / "smoke_qr_acct.png"
+    prod_img = ROOT / "data" / "smoke_qr_prod.png"
+    for path in (owner_img, acct_img, prod_img):
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + path.stem.encode() * 8)
+
+    seller_a = await make_account("+85511100015")
+    seller_b = await make_account("+85511100016")
+    async with db_session() as session:
+        category, err = await crud.create_category(
+            session, code="qrlad", prefix="QRL", name_kh="ជណ្តើរ QR", icon="💳"
+        )
+        product = await crud.create_product(
+            session, name="Ladder Pass", price=5.0, category=category.name_kh, category_id=category.id
+        )
+        await crud.add_stock_lines(session, product.id, ["lad-1|a", "lad-2|b", "lad-3|c"])
+        # ៣ ជាន់៖ ភ្ជាប់គណនី A → ភ្ជាប់ផលិតផល (គ្មានគណនី) → default ម្ចាស់ (គ្មានគណនី)
+        await crud.create_qrcode(
+            session, name="Owner default", provider="aba", account_info="000000 ABA",
+            image_path=str(owner_img), is_default=True,
+        )
+        await crud.create_qrcode(
+            session, name="QR A", provider="aba", account_info="111111 ABA",
+            image_path=str(acct_img), account_id=seller_a.id,
+        )
+        await crud.create_qrcode(
+            session, name="QR product", provider="aba", account_info="222222 ABA",
+            image_path=str(prod_img), product_id=product.id,
+        )
+        pid = product.id
+    check("create_category សម្រាប់ជណ្តើរ QR", err == "")
+
+    # គណនី A — QR ភ្ជាប់គណនី ឈ្នះទាំង QR ផលិតផល និង QR ទូទៅ
+    ha = Harness(seller_a.id, with_catalog=True)
+    cust_a = 860000100
+    await ha.seller.handle_inbound(cust_a, "សួស្តី")
+    await ha.seller.handle_inbound(cust_a, "ខ្ញុំចង់ទិញ Ladder Pass ១ មុខ")
+    sent_a = await wait_until(lambda: len(ha.sender.photos) >= 1, 8.0)
+    check("គណនី A → ផ្ញើ QR ភ្ជាប់គណនី A", sent_a and ha.sender.photos[0][1] == str(acct_img))
+
+    # គណនី B — គ្មាន QR ភ្ជាប់ខ្លួន → QR ផលិតផល (មិនមែន default)
+    hb = Harness(seller_b.id, with_catalog=True)
+    cust_b = 860000101
+    await hb.seller.handle_inbound(cust_b, "សួស្តី")
+    await hb.seller.handle_inbound(cust_b, "ខ្ញុំចង់ទិញ Ladder Pass ១ មុខ")
+    sent_b = await wait_until(lambda: len(hb.sender.photos) >= 1, 8.0)
+    check("គណនី B → QR ផលិតផល (គ្មាន QR ភ្ជាប់គណនី)", sent_b and hb.sender.photos[0][1] == str(prod_img))
+    check("QR របស់គណនី A មិនធ្លាក់ទៅគណនី B", all(p[1] != str(acct_img) for p in hb.sender.photos))
+
+    # លុប QR ផលិតផល → គណនី B ត្រឡប់ទៅ default របស់ម្ចាស់
+    async with db_session() as session:
+        await session.execute(delete(QRCode).where(QRCode.product_id == pid))
+    hc = Harness(seller_b.id, with_catalog=True)
+    cust_c = 860000102
+    await hc.seller.handle_inbound(cust_c, "សួស្តី")
+    await hc.seller.handle_inbound(cust_c, "ខ្ញុំចង់ទិញ Ladder Pass ១ មុខ")
+    sent_c = await wait_until(lambda: len(hc.sender.photos) >= 1, 8.0)
+    check("គ្មាន QR ផលិតផល → ត្រឡប់ទៅ default របស់ម្ចាស់", sent_c and hc.sender.photos[0][1] == str(owner_img))
+
+    for harness in (ha, hb, hc):
+        await harness.outbox.stop()
+        await harness.seller.stop()
+    for path in (owner_img, acct_img, prod_img):
+        path.unlink(missing_ok=True)
+
+
 async def test_manager_surface() -> None:
     print("\n[12] Manager — send gate + device pool")
     manager = AccountManager(notify=None)
@@ -942,6 +1010,7 @@ async def main() -> int:
     await test_manager_surface()
     await test_catalog_flow()
     await test_text_buy_qr()
+    await test_qr_account_ladder()
     print(f"\n{'✅ រំលង' if PASSED == TOTAL else '❌ មាន failure'} — {PASSED}/{TOTAL} checks ឆ្លងកាត់")
     if FAILURES:
         for name in FAILURES:
