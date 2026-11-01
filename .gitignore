@@ -1,0 +1,29 @@
+# កុំ upload តម្លៃឯកជន ឬទិន្នន័យម៉ាស៊ីន
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ទិន្នន័យ និងឯកសារ
+data/
+media/
+backups/
+logs/
+*.db
+*.db-journal
+*.sqlite3
+
+# Telethon session (ជំហានទី ២) — សំខាន់បំផុត កុំដាក់ក្នុង git ឡើយ
+*.session
+*.session-journal
+
+# លក្ខខណ្ឌម៉ាស៊ីន
+.DS_Store
+.idea/
+.vscode/
