@@ -22,6 +22,12 @@ os.environ["USE_MOCK_BOT"] = "1"
 os.environ["BOT_TOKEN"] = ""
 os.environ["AI_BACKEND"] = "mock"
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./data/smoke_test.db"
+# Chat login តេស្តលើ FakeClient (គ្មានបណ្តាញ) — ត្រូវការ credential/Fernet មិនទទេ
+os.environ["TG_API_ID"] = "12345"
+os.environ["TG_API_HASH"] = "0123456789abcdef0123456789abcdef"
+from cryptography.fernet import Fernet  # noqa: E402
+
+os.environ["SESSION_FERNET_KEY"] = Fernet.generate_key().decode()
 
 from aiogram.dispatcher.event.bases import UNHANDLED  # noqa: E402
 from aiogram.types import Update  # noqa: E402
@@ -80,13 +86,14 @@ class Panel:
         self.errors: list[str] = []
         self.checked = 0
 
-    async def feed(self, kind: str, label: str, *, expect_reply: bool = True, user_id: int = OWNER, **fields):
+    async def feed(self, kind: str, label: str, *, expect_reply: bool = True, unhandled_ok: bool = False,
+                   user_id: int = OWNER, **fields):
         before = len(self.session.sent)
         update = Update.model_validate(_payload(kind, user_id, **fields), context={"bot": self.bot})
         result = await self.dispatcher.feed_update(self.bot, update)
 
         self.checked += 1
-        if result is UNHANDLED:
+        if result is UNHANDLED and not unhandled_ok:
             self.errors.append(f"✗ {label}: គ្មាន handler ទទួល (UNHANDLED)")
         elif expect_reply and len(self.session.sent) == before:
             self.errors.append(f"✗ {label}: គ្មានសារតប ជូន owner")
@@ -100,6 +107,103 @@ class Panel:
 
     def said(self, fragment: str) -> bool:
         return any(fragment in item for item in self.session.texts)
+
+    def mark(self) -> int:
+        """ចំណុចយោង — ប្រើជាមួយ said_since ដើម្បីវាស់តែសារដែលចេញ *ក្រោយ* ជំហាននេះ។"""
+        return len(self.session.texts)
+
+    def said_since(self, mark: int, fragment: str) -> bool:
+        return any(fragment in item for item in self.session.texts[mark:])
+
+    def says_not_since(self, mark: int, fragment: str) -> bool:
+        return not any(fragment in item for item in self.session.texts[mark:])
+
+
+async def wait_for_text_since(panel: Panel, mark: int, fragment: str, timeout: float = 3.0) -> bool:
+    """រង់ចាំសារថ្មី (ចាប់ពី `mark`) — login រត់ក្នុង Task ដាច់ពី handler។"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if any(fragment in item for item in panel.session.texts[mark:]):
+            return True
+        await asyncio.sleep(0.02)
+    return any(fragment in item for item in panel.session.texts[mark:])
+
+
+# ---------- Fake Telethon client — chat login ដោយគ្មានបណ្តាញ ----------
+class SessionPasswordNeededError(Exception):
+    """ឈ្មោះ class ត្រូវដូច Telethon — chat_login dispatch តាម `type(exc).__name__`។"""
+
+
+class PhoneCodeInvalidError(Exception):
+    pass
+
+
+class _FakeSession:
+    def save(self) -> str:
+        return "1FAKESESSION" + "X" * 120
+
+
+class _FakeSent:
+    phone_code_hash = "FAKE-CODE-HASH"
+
+
+class _FakeMe:
+    id = 777000999
+    username = "smoke_login"
+    first_name = "Smoke"
+    last_name = "Login"
+
+
+class FakeClient:
+    def __init__(self, *, need_2fa: bool = False, reject_code: str = "") -> None:
+        self.session = _FakeSession()
+        self.need_2fa = need_2fa
+        self.reject_code = reject_code
+        self.codes: list[str] = []
+        self.passwords: list[str] = []
+        self.disconnected = False
+
+    async def connect(self) -> bool:
+        return True
+
+    async def send_code_request(self, phone: str) -> _FakeSent:
+        return _FakeSent()
+
+    async def sign_in(self, *, phone=None, code=None, phone_code_hash=None, password=None):
+        if code is not None:
+            self.codes.append(code)
+            if code == self.reject_code:
+                raise PhoneCodeInvalidError("invalid")
+            if self.need_2fa:
+                raise SessionPasswordNeededError("2fa")
+            return True
+        self.passwords.append(password)
+        return True
+
+    async def get_me(self) -> _FakeMe:
+        return _FakeMe()
+
+    async def is_user_authorized(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+
+
+class FakeClientFactory:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.instances: list[FakeClient] = []
+
+    def __call__(self, device_index: int) -> FakeClient:
+        client = FakeClient(**self.kwargs)
+        self.instances.append(client)
+        return client
+
+    @property
+    def last(self) -> FakeClient:
+        return self.instances[-1]
 
 
 async def main() -> int:
@@ -306,6 +410,243 @@ async def main() -> int:
     await panel.msg("/addadmin 777000123 Admin SMOKE")
     await panel.cb("menu:main")
     await panel.msg("/cancel")
+
+    print("— RBAC — វិសាលភាព Staff (Owner-only + IDOR) —")
+    STAFF = 777000456
+    STAFF_PHONE = "+85512777456"
+    OWNER_ONLY_TEXT = "ម្ចាស់ (Owner)"
+
+    def expect(label: str, ok: bool) -> None:
+        if not ok:
+            panel.errors.append(f"✗ {label}")
+
+    async with db_session() as session:
+        await crud.add_admin(session, STAFF, "Staff SMOKE")
+        staff_account = await crud.create_account(
+            session, STAFF_PHONE, "STAFF-NOT-A-REAL-SESSION", "Staff SMOKE",
+            owner_admin_id=STAFF, enabled=True,
+        )
+        staff_account_id = staff_account.id
+        await crud.get_or_create_customer(session, 555000901)
+        await crud.set_customer_account(session, 555000901, staff_account_id)
+        await crud.get_or_create_customer(session, 555000902)
+        await crud.set_customer_account(session, 555000902, account_id)
+        staff_customer = await crud.get_customer_by_telegram(session, 555000901)
+        owner_customer = await crud.get_customer_by_telegram(session, 555000902)
+        staff_qr = await crud.create_qrcode(
+            session, name="ABA STAFF", provider="ABA", account_info="https://pay.aba.example/staff",
+            owner_admin_id=STAFF,
+        )
+        staff_qr_id = staff_qr.id
+        staff_order = await crud.create_order(
+            session, customer_id=555000901, product_id=product_id, product_name="Staff Order SMOKE",
+            price=2.5, account_id=staff_account_id,
+        )
+        staff_order_id = staff_order.id
+
+    mark = panel.mark()
+    await panel.cb("prod:add", user_id=STAFF)
+    await panel.msg("Staff Key ONLY", user_id=STAFF)
+    await panel.msg("-staff note", user_id=STAFF)
+    await panel.msg("2.50", user_id=STAFF)
+    await panel.msg("ហ្គេម", user_id=STAFF)
+    await panel.msg("skip", user_id=STAFF)
+    async with db_session() as session:
+        staff_products, _n = await crud.list_products(session, search="Staff Key", owner_admin_id=STAFF)
+        staff_product_id = staff_products[0].id if staff_products else None
+    expect("staff បង្កើតផលិតផលបាន + ភ្ជាប់ម្ចាស់", staff_product_id is not None)
+
+    mark = panel.mark()
+    await panel.msg("/products", user_id=STAFF)
+    expect("staff ឃើញផលិតផលខ្លួន", panel.said_since(mark, "Staff Key ONLY"))
+    expect("staff មិនឃើញផលិតផល owner", panel.says_not_since(mark, "Game Key SMOKE"))
+
+    mark = panel.mark()
+    await panel.cb(f"prod:view:{product_id}", user_id=STAFF)
+    expect("IDOR prod:view → បដិសេធ", panel.said_since(mark, "រកមិនឃើញផលិតផល"))
+    expect("IDOR prod:view មិនបង្ហាញឈ្មោះផលិតផល owner", panel.says_not_since(mark, "Game Key SMOKE"))
+
+    await panel.cb(f"prod:del:{product_id}", user_id=STAFF)
+    await panel.cb(f"prod:askdel:{product_id}", user_id=STAFF)
+    async with db_session() as session:
+        expect("IDOR prod:del លុបមិនបាន (owner នៅដដែល)", await crud.get_product(session, product_id) is not None)
+
+    mark = panel.mark()
+    await panel.cb("menu:categories", user_id=STAFF)
+    expect("staff ឃើញប្រភេទដែលមានផលិតផលខ្លួន", panel.said_since(mark, "គណនីហ្គេម"))
+    expect("staff មិនឃើញប្រភេទទទេ (ខោអាវ)", panel.says_not_since(mark, "ខោអាវ"))
+
+    mark = panel.mark()
+    await panel.cb("cat:add", user_id=STAFF, unhandled_ok=True)
+    expect("staff បន័ែមប្រភេទមិនបាន", panel.said_since(mark, OWNER_ONLY_TEXT))
+    async with db_session() as session:
+        expect("cat:add មិនតັ້ FSM របស់ staff", await crud.get_category_by_code(session, "staff_try") is None)
+
+    async with db_session() as session:
+        before = await crud.get_category(session, game_cat_id)
+        was_active = bool(before and before.is_active)
+    mark = panel.mark()
+    await panel.cb(f"cat:toggle:{game_cat_id}", user_id=STAFF, unhandled_ok=True)
+    expect("staff បិទ/បើកប្រភេទមិនបាន", panel.said_since(mark, OWNER_ONLY_TEXT))
+    async with db_session() as session:
+        after = await crud.get_category(session, game_cat_id)
+        expect("cat:toggle មិនប៉ះ is_active", bool(after and after.is_active) == was_active)
+
+    for target, name in (("settings", "⚙️"), ("prompt", "🧠")):
+        mark = panel.mark()
+        await panel.cb(f"menu:{target}", user_id=STAFF, unhandled_ok=True)
+        expect(f"staff ចូល {target} មិនបាន", panel.said_since(mark, OWNER_ONLY_TEXT))
+
+    mark = panel.mark()
+    await panel.cb(f"ord:view:{order_id}", user_id=STAFF)
+    expect("IDOR ord:view → បដិសេធ", panel.said_since(mark, "រកមិនឃើញ") and panel.says_not_since(mark, "Game Key SMOKE"))
+    mark = panel.mark()
+    await panel.cb(f"ord:view:{staff_order_id}", user_id=STAFF)
+    expect("staff ឃើញ Order ខ្លួន", panel.said_since(mark, "Staff Order SMOKE"))
+    await panel.cb(f"ord:confirm:{order_id}", user_id=STAFF)
+    async with db_session() as session:
+        guarded = await crud.get_order(session, order_id, account_ids=(staff_account_id,))
+        expect("IDOR ord:confirm មិនបាន deliver", guarded is None)
+
+    mark = panel.mark()
+    await panel.cb(f"qr:view:{qr_id}", user_id=STAFF)
+    expect("IDOR qr:view → បដិសេធ", panel.said_since(mark, "រកមិនឃើញ") and panel.says_not_since(mark, "ABA SMOKE"))
+    mark = panel.mark()
+    await panel.cb(f"qr:default:{qr_id}", user_id=STAFF)
+    expect("staff កំណត់ default QR owner មិនបាន", panel.said_since(mark, "រកមិនឃើញ"))
+    async with db_session() as session:
+        owner_qr = await crud.get_qrcode(session, qr_id, owner_admin_id=None)
+        expect("default QR owner នៅដដែល", bool(owner_qr and owner_qr.is_default))
+
+    mark = panel.mark()
+    await panel.msg("/accounts", user_id=STAFF)
+    expect("staff ឃើញគណនីខ្លួន", panel.said_since(mark, STAFF_PHONE))
+    expect("staff មិនឃើញគណនី owner", panel.says_not_since(mark, "+85512999000"))
+    mark = panel.mark()
+    await panel.cb(f"acc:view:{account_id}", user_id=STAFF)
+    expect("IDOR acc:view → បដិសេធ", panel.said_since(mark, "រកមិនឃើញ"))
+    mark = panel.mark()
+    await panel.cb(f"acc:ai:{account_id}", user_id=STAFF)
+    expect("IDOR acc:ai → បដិសេធ", panel.said_since(mark, "រកមិនឃើញ"))
+    mark = panel.mark()
+    await panel.cb(f"acc:primary:{staff_account_id}", user_id=STAFF, unhandled_ok=True)
+    expect("staff កំណត់ Primary មិនបាន", panel.said_since(mark, OWNER_ONLY_TEXT))
+    mark = panel.mark()
+    await panel.cb(f"acc:askowner:{staff_account_id}", user_id=STAFF, unhandled_ok=True)
+    expect("staff ប្ដូរម្ចាស់គណនីមិនបាន", panel.said_since(mark, OWNER_ONLY_TEXT))
+    async with db_session() as session:
+        staff_row = await crud.get_account(session, staff_account_id)
+        expect("staff មិនបានក្លាយជា primary", staff_row is not None and not staff_row.is_primary)
+        expect("staff មិនបានប្ដូរម្ចាស់គណនីខ្លួន", staff_row is not None and staff_row.owner_admin_id == STAFF)
+
+    mark = panel.mark()
+    await panel.cb(f"cus:view:{owner_customer.id}", user_id=STAFF)
+    expect("IDOR cus:view → បដិសេធ", panel.said_since(mark, "រកមិនឃើញអតិថិជន"))
+    await panel.cb(f"cus:pause:{owner_customer.id}", user_id=STAFF)
+    async with db_session() as session:
+        untouched = await crud.get_customer_by_telegram(session, 555000902)
+        expect("IDOR cus:pause មិនប៉ះអតិថិជន owner", untouched is not None and not untouched.ai_paused)
+    mark = panel.mark()
+    await panel.cb(f"cus:view:{staff_customer.id}", user_id=STAFF)
+    expect("staff ឃើញអតិថិជនខ្លួន", panel.says_not_since(mark, "រកមិនឃើញអតិថិជន"))
+    mark = panel.mark()
+    async with db_session() as session:
+        ai_before = await crud.get_setting(session, "ai_enabled", "on")
+    await panel.msg("/pauseall", user_id=STAFF)
+    expect("staff /pauseall មិនបាន", panel.said_since(mark, "គត់ Owner"))
+    async with db_session() as session:
+        expect("staff /pauseall មិនប៉ះ ai_enabled global",
+               (await crud.get_setting(session, "ai_enabled", "on")) == ai_before)
+        expect("staff /pauseall មិនផ្អាកអតិថិជន owner",
+               not (await crud.get_customer_by_telegram(session, 555000902)).ai_paused)
+
+    mark = panel.mark()
+    await panel.msg("/lowstock", user_id=STAFF)
+    expect("staff /lowstock មិនបង្ហាញ stock owner", panel.says_not_since(mark, "Game Key SMOKE"))
+    mark = panel.mark()
+    await panel.cb(f"prod:view:{staff_product_id}", user_id=OWNER)
+    expect("Owner ឃើញផលិតផល staff", panel.said_since(mark, "Staff Key ONLY"))
+
+    print("— Chat Login — /addaccount + OTP auto-delete + 2FA + /cancel —")
+    from sqlalchemy import select as _select
+
+    from database.models import Account as _Account
+    from userbot import chat_login, session_store
+
+    async def fetch_account(phone: str):
+        async with db_session() as session:
+            return await session.scalar(_select(_Account).where(_Account.phone == phone))
+
+    def use_coordinator(**kwargs) -> FakeClientFactory:
+        factory = FakeClientFactory(**kwargs)
+        chat_login.reset_coordinator()
+        chat_login._coordinator = chat_login.LoginCoordinator(client_factory=factory)  # noqa: SLF001
+        return factory
+
+    mark = panel.mark()
+    await panel.msg("/addaccount 12abc", user_id=STAFF)
+    expect("លេខខុស → បដិសេធ", panel.said_since(mark, "លេខទូរស័ព្ទខុសទ្រង់ទ្រាយ"))
+
+    factory = use_coordinator()
+    login_phone = "+85512777000"
+    otp = "741852"
+    mark = panel.mark()
+    await panel.msg(f"/addaccount {login_phone}", user_id=STAFF, expect_reply=False)
+    expect("OTP ត្រូវសួរ", await wait_for_text_since(panel, mark, "កូដ OTP"))
+    expect("coordinator មាន pending", chat_login.get_coordinator().has_pending(STAFF, STAFF))
+    api_mark = len(panel.session.sent)
+    await panel.msg(otp, user_id=STAFF, expect_reply=False)
+    expect("សារ OTP ត្រូវលុបភ្លាម", "deleteMessage" in panel.session.sent[api_mark:])
+    expect("OTP មិនដែលចេញជាសារ Bot", panel.says_not_since(0, otp))
+    done = await wait_for_text_since(panel, mark, "ភ្ជាប់រួច")
+    expect("login ជោគជ័យ → ជូនដំណឹង", done)
+    logged = await fetch_account(login_phone)
+    expect("Account row ត្រូវបង្កើត", logged is not None)
+    if logged is not None:
+        expect("គណនីជាប់នឹង staff (owner_admin_id)", logged.owner_admin_id == STAFF)
+        expect("session ក្នុង DB ជា ciphertext", "FAKESESSION" not in (logged.session_encrypted or ""))
+        expect("decrypt ត្រឡប់ session ដើម", session_store.decrypt(logged.session_encrypted).startswith("1FAKESESSION"))
+    expect("session string មិនដែលចេញ chat", panel.says_not_since(0, "FAKESESSION"))
+    expect("FakeClient ត្រូវ disconnect", factory.last.disconnected)
+
+    factory = use_coordinator(need_2fa=True)
+    password = "smoke-2fa-secret"
+    mark = panel.mark()
+    await panel.msg(f"/addaccount {login_phone}", user_id=STAFF, expect_reply=False)
+    await wait_for_text_since(panel, mark, "កូដ OTP")
+    await panel.msg(otp, user_id=STAFF, expect_reply=False)
+    expect("2FA ត្រូវសួរ", await wait_for_text_since(panel, mark, "ផ្ញើពាក្យសម្ងាត់ Cloud"))
+    api_mark = len(panel.session.sent)
+    await panel.msg(password, user_id=STAFF, expect_reply=False)
+    expect("សារ 2FA ត្រូវលុបភ្លាម", "deleteMessage" in panel.session.sent[api_mark:])
+    expect("2FA មិនដែលចេញជាសារ Bot", panel.says_not_since(0, password))
+    expect("login 2FA ជោគជ័យ", await wait_for_text_since(panel, mark, "ភ្ជាប់រួច"))
+    expect("password ផ្ញើទៅ client", factory.last.passwords == [password])
+
+    factory = use_coordinator(reject_code="000000")
+    mark = panel.mark()
+    await panel.msg("/addaccount +85512777001", user_id=STAFF, expect_reply=False)
+    await wait_for_text_since(panel, mark, "កូដ OTP")
+    for attempt in range(3):
+        await panel.msg("000000", user_id=STAFF, expect_reply=False)
+        if attempt < 2:
+            await wait_for_text_since(panel, mark, "កូដមុនខុស")
+    expect("OTP ខុស ៣ ដង → បញ្ចប់", await wait_for_text_since(panel, mark, "កូដ OTP ខុស ៣ ដង"))
+    expect("គ្មាន pending ក្រោយបរាជ័យ", not chat_login.get_coordinator().has_pending(STAFF, STAFF))
+    expect("login បរាជ័យ → គ្មាន orphan row", await fetch_account("+85512777001") is None)
+
+    factory = use_coordinator()
+    mark = panel.mark()
+    await panel.msg("/addaccount +85512777002", user_id=STAFF, expect_reply=False)
+    await wait_for_text_since(panel, mark, "កូដ OTP")
+    expect("pending មុន /cancel", chat_login.get_coordinator().has_pending(STAFF, STAFF))
+    mark = panel.mark()
+    await panel.msg("/cancel", user_id=STAFF)
+    expect("/cancel បោះបង់ login", panel.said_since(mark, "បានបោះបង់ការ login"))
+    expect("គ្មាន pending ក្រោយ /cancel", not chat_login.get_coordinator().has_pending(STAFF, STAFF))
+    expect("client ត្រូវ disconnect (/cancel)", factory.last.disconnected)
+    expect("/cancel → គ្មាន Account row", await fetch_account("+85512777002") is None)
+    await chat_login.get_coordinator().shutdown()
 
     print("— កិច្ចស្វ័យប្រវត្តិ + ទិន្នន័យ —")
     from services.reports import build_report

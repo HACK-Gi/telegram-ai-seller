@@ -71,6 +71,11 @@ class MockSession(BaseSession):
         body = getattr(method, "text", None) or getattr(method, "caption", None)
         if body:
             self.texts.append(body)
+        # ឈ្មោះប៊ូតុងក៏ជា «អ្វីដែលអ្នកប្រើឃើញ» ដែរ — smoke test ត្រូវការវាស់វា
+        keyboard = getattr(method, "reply_markup", None)
+        rows = getattr(keyboard, "inline_keyboard", None)
+        if rows:
+            self.texts.append(" | ".join(button.text or "" for row in rows for button in row))
 
         returning = method.__returning__
         if returning is bool:

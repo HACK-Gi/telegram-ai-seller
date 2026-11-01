@@ -469,9 +469,11 @@ async def test_controls() -> None:
         def __init__(self) -> None:
             self.stops = 0
             self.starts = 0
+            self.queues = {1: 2}
 
         def status(self):
-            return {"running_accounts": [1], "global_stopped": False, "started": True, "queues": {1: 2}}
+            return {"running_accounts": list(self.queues), "global_stopped": False,
+                    "started": True, "queues": dict(self.queues)}
 
         async def global_stop(self):
             self.stops += 1
@@ -536,6 +538,76 @@ async def test_controls() -> None:
     ev = FakeEvent(700000002, "/resume")  # admin id
     await controls.on_command(ev)
     check("admin ក៏បញ្ជាបាន", bool(ev.replies))
+
+    # ---------- វិសាលភាព Staff — /pause /pauseall /stopbot /status ----------
+    STAFF_ID = 700000002
+    staff_cust = 840000002
+    async with db_session() as session:
+        staff_account = await crud.create_account(
+            session, "+85512777002", "STAFF-SESSION", "Staff UB", owner_admin_id=STAFF_ID
+        )
+        staff_account_id = staff_account.id
+        await crud.get_or_create_customer(session, staff_cust)
+        await crud.set_customer_account(session, staff_cust, staff_account_id)
+        await crud.set_setting(session, "ai_enabled", "on")
+    manager.queues[staff_account_id] = 5
+
+    ev = FakeEvent(STAFF_ID, f"/pause {cust}")  # អតិថិជនក្រៅវិសាលភាព
+    await controls.on_command(ev)
+    check("staff /pause អតិថិជនគេ → 🔒 បដិសេធ", ev.replies and "🔒" in ev.replies[0])
+    async with db_session() as session:
+        check("IDOR /pause មិនប៉ះ ai_paused", not (await crud.get_customer_by_telegram(session, cust)).ai_paused)
+
+    ev = FakeEvent(STAFF_ID, f"/pause {staff_cust}")
+    await controls.on_command(ev)
+    async with db_session() as session:
+        check("staff /pause អតិថិជនខ្លួន បាន", (await crud.get_customer_by_telegram(session, staff_cust)).ai_paused)
+
+    ev = FakeEvent(STAFF_ID, "/pauseall")
+    await controls.on_command(ev)
+    async with db_session() as session:
+        check("staff /pauseall មិនប៉ះ ai_enabled global",
+              (await crud.get_setting(session, "ai_enabled")) == "on")
+        check("staff /pauseall មិនផ្អាកអតិថិជនគេ",
+              not (await crud.get_customer_by_telegram(session, cust)).ai_paused)
+        check("staff /pauseall ផ្អាកអតិថិជនខ្លួន",
+              (await crud.get_customer_by_telegram(session, staff_cust)).ai_paused)
+
+    ev = FakeEvent(STAFF_ID, "/resumeall")
+    await controls.on_command(ev)
+    async with db_session() as session:
+        check("staff /resumeall បើកតែគណនីខ្លួន",
+              not (await crud.get_customer_by_telegram(session, staff_cust)).ai_paused
+              and (await crud.get_setting(session, "ai_enabled")) == "on")
+
+    stops_before, starts_before = manager.stops, manager.starts
+    for cmd, attr in (("/stopbot", "stops"), ("/startbot", "starts")):
+        ev = FakeEvent(STAFF_ID, cmd)
+        await controls.on_command(ev)
+        check(f"staff {cmd} → បដិសេធ Owner", bool(ev.replies) and "Owner គត់" in ev.replies[0])
+    await asyncio.sleep(0.05)
+    check("staff /stopbot//startbot មិនផ្លាស់ប្តូរ manager",
+          (manager.stops, manager.starts) == (stops_before, starts_before))
+
+    ev = FakeEvent(STAFF_ID, "/status")
+    await controls.on_command(ev)
+    check("staff /status បង្ហាញតែគណនីខ្លួន",
+          ev.replies and f"គណនី #{staff_account_id} — ជួររង់ចាំ 5" in ev.replies[0]
+          and "គណនី #1 —" not in ev.replies[0])
+
+    ev = FakeEvent(settings.owner_id, "/status")
+    await controls.on_command(ev)
+    check("Owner /status ឃើញគណនីទាំងអស់",
+          ev.replies and f"គណនី #{staff_account_id}" in ev.replies[0] and "ជួររង់ចាំ 2" in ev.replies[0])
+
+    ev = FakeEvent(settings.owner_id, "/stopbot")
+    await controls.on_command(ev)
+    await asyncio.sleep(0.05)
+    check("Owner /stopbot → manager.global_stop", manager.stops == stops_before + 1)
+    ev = FakeEvent(settings.owner_id, "/startbot")
+    await controls.on_command(ev)
+    await asyncio.sleep(0.05)
+    check("Owner /startbot → manager.global_start", manager.starts == starts_before + 1)
     await asyncio.sleep(0.05)
 
 
