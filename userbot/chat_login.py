@@ -29,11 +29,10 @@ from secrets import randbelow
 
 from sqlalchemy import select, update
 
-from config import settings
 from database import crud
 from database.models import Account
 from database.session import db_session
-from userbot import safety, session_store
+from userbot import credentials, safety, session_store
 from userbot.manager import DEVICE_POOL, current_manager
 from userbot.safety import describe_error
 
@@ -88,7 +87,7 @@ HINTS: dict[str, str] = {
     "SessionRevokedError": "Telegram បានដក session នេះ — សាកល្បង login ឡើងវិញ ក្រោយ ២៤ ម៉ោង",
     "SessionLoggedOut": "គណនីនេះ out log រួច — ត្រូវ login ឡើងវិញ",
     "Unauthorized": "Telegram បដិសេធការ login នេះ",
-    "ApiIdInvalidError": "TG_API_ID / TG_API_HASH ខុស (my.telegram.org/api/credentials)",
+    "ApiIdInvalidError": "api_id / api_hash ខុស — ពិនិត្យ my.telegram.org → API development tools",
     "AuthKeyUnregisteredError": "គណនីនេះត្រូវបាន Telegram បិទ (banned)",
     "FloodWaitError": "Telegram សុំឱ្យរង់ចាំបន្តិចមុនសាកល្បងឡើងវិញ",
     "SessionStartFailed": "Telegram បដិសេធមិនឱ្យចាប់ផ្តើម session ពី IP នេះ",
@@ -140,6 +139,8 @@ class PendingLogin:
     phone: str
     name: str
     device_index: int
+    api_id: int
+    api_hash: str
     channel: LoginChannel
     client: Any = None
     code_hash: str = ""
@@ -169,16 +170,20 @@ def _stable_device_index(existing: Account | None) -> int:
     return int(existing.id)
 
 
-def _client_for(device_index: int) -> Any:
-    """Telethon client ដែល fingerprint ដូច manager (device pool តាម index)។"""
+def _client_for(device_index: int, api_id: int, api_hash: str) -> Any:
+    """Telethon client ដែល fingerprint ដូច manager (device pool តាម index)។
+
+    `api_id`/`api_hash` ជារបស់ម្ចាស់គណនី (មិនមែន .env) — Telegram ចង auth key នឹង App
+    ដែលបង្កើតវា ដូច្នេះ session ដែល login ដោយ App ណាមួយ ត្រូវ reconnect ដោយ App នោះដែរ។
+    """
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 
     device, system, version = DEVICE_POOL[device_index % len(DEVICE_POOL)]
     return TelegramClient(
         StringSession(),
-        settings.tg_api_id,
-        settings.tg_api_hash,
+        api_id,
+        api_hash,
         device_model=device,
         system_version=system,
         application_version=version,
@@ -188,7 +193,7 @@ def _client_for(device_index: int) -> Any:
 
 
 class LoginCoordinator:
-    def __init__(self, *, client_factory: Callable[[int], Any] | None = None) -> None:
+    def __init__(self, *, client_factory: Callable[[int, int, str], Any] | None = None) -> None:
         self._pending: dict[str, PendingLogin] = {}
         self._client_factory = client_factory or _client_for
 
@@ -211,6 +216,8 @@ class LoginCoordinator:
         chat_id: int,
         user_id: int,
         phone: str,
+        api_id: int,
+        api_hash: str,
         name: str,
         channel: LoginChannel,
     ) -> str | None:
@@ -218,8 +225,8 @@ class LoginCoordinator:
         ok, message = session_store.key_status()
         if not ok:
             return f"🔐 {message}"
-        if not settings.tg_api_id or not settings.tg_api_hash:
-            return "🚫 មិនមាន TG_API_ID/TG_API_HASH ក្នុង .env — មិនអាច login បានទេ"
+        if not api_id or not api_hash:
+            return "🚫 ខ្វះ api_id ឬ api_hash របស់ App នេះ — ចាប់ផ្តើម /addaccount ឡើងវិញ"
         normalized = normalize_phone(phone)
         if normalized is None:
             return (
@@ -234,6 +241,7 @@ class LoginCoordinator:
             return "⚠️ មានការ login កំពុងដំណើរក្នុង chat នេះរួចហើយ — វាយ /cancel បើចង់បោះបង់"
 
         safety.register_secret(phone)
+        safety.register_secret(api_hash)  # កុំឱ្យ log/exception ណាបញ្ចេញ api_hash
         async with db_session() as session:
             existing = await session.scalar(select(Account).where(Account.phone == phone))
         if existing is not None and existing.owner_admin_id is not None and existing.owner_admin_id != user_id:
@@ -248,6 +256,8 @@ class LoginCoordinator:
             phone=phone,
             name=(name or "").strip()[:200],
             device_index=device_index,
+            api_id=int(api_id),
+            api_hash=api_hash,
             channel=channel,
             code_future=self._loop().create_future(),
             password_future=self._loop().create_future(),
@@ -346,7 +356,7 @@ class LoginCoordinator:
     async def _run(self, entry: PendingLogin) -> None:
         client = None
         try:
-            client = self._client_factory(entry.device_index)
+            client = self._client_factory(entry.device_index, entry.api_id, entry.api_hash)
             entry.client = client
             await client.connect()
             sent = await client.send_code_request(entry.phone)
@@ -360,7 +370,13 @@ class LoginCoordinator:
             token, fp = self._seal(client)
             account_id = await self._persist(entry, token=token, me=me)
             entry._account_id = account_id
-            log.info("chat login ជោគជ័យ · គណនី #%s · admin=%s · fp=%s", account_id, entry.user_id, fp)
+            log.info(
+                "chat login ជោគជ័យ · គណនី #%s · admin=%s · fp=%s · api_id=%s",
+                account_id,
+                entry.user_id,
+                fp,
+                entry.api_id,
+            )
             await self._attach(account_id)
             await entry.channel.result(
                 True,
@@ -390,7 +406,13 @@ class LoginCoordinator:
         return token, fp
 
     async def _persist(self, entry: PendingLogin, *, token: str, me: Any) -> int:
-        """បង្កើត/កែ Account row ក្រោយ auth ជោគជ័យតែប៉ុណ្ណោះ (D2: enabled=True)។"""
+        """បង្កើត/កែ Account row ក្រោយ auth ជោគជ័យតែប៉ុណ្ណោះ (D2: enabled=True)។
+
+        `api_id`/`api_hash` ត្រូវ encrypt ជាមួយ session ក្នុង transaction តែមួយ — បើញែកគ្នា
+        ការបរាជ័យកណ្តាលអាចទុក session ដែល reconnect មិនបាន (គ្មាន App ត្រូវគ្នា)។
+        """
+        api_id_token = credentials.encrypt_credential(str(entry.api_id))
+        api_hash_token = credentials.encrypt_credential(entry.api_hash)
         async with db_session() as session:
             existing = await session.scalar(select(Account).where(Account.phone == entry.phone))
             if existing is not None:
@@ -399,7 +421,13 @@ class LoginCoordinator:
                 await session.execute(
                     update(Account)
                     .where(Account.id == existing.id)
-                    .values(session_encrypted=token, device_index=entry.device_index, name=entry.name or existing.name)
+                    .values(
+                        session_encrypted=token,
+                        device_index=entry.device_index,
+                        name=entry.name or existing.name,
+                        tg_api_id_encrypted=api_id_token,
+                        tg_api_hash_encrypted=api_hash_token,
+                    )
                 )
                 return int(existing.id)
             account = await crud.create_account(
@@ -410,6 +438,8 @@ class LoginCoordinator:
                 owner_admin_id=entry.user_id,
                 enabled=True,
                 device_index=entry.device_index,
+                tg_api_id_encrypted=api_id_token,
+                tg_api_hash_encrypted=api_hash_token,
             )
             await crud.record_account_identity(
                 session,

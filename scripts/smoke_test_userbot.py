@@ -246,6 +246,72 @@ async def test_phone_normalization() -> None:
     check("ទទេ → បដិសេធ (None)", normalize_phone("   ") is None)
 
 
+async def test_api_credentials() -> None:
+    print("\n[1c] api credentials — validation, encryption, resolve")
+    from userbot import credentials
+
+    check("api_id «3141592» → 3141592", credentials.valid_api_id("3141592") == 3141592)
+    check("api_id មានចន្លោះ « 3141592 » → ទទួល", credentials.valid_api_id(" 3141592 ") == 3141592)
+    check("api_id អក្សរ «12ab34» → បដិសេធ", credentials.valid_api_id("12ab34") is None)
+    check("api_id ខ្លី «12345» → បដិសេធ", credentials.valid_api_id("12345") is None)
+    check("api_id ១១ ខ្ទង់ → បដិសេធ", credentials.valid_api_id("12345678901") is None)
+    check("api_id ០ → បដិសេធ", credentials.valid_api_id("000000") is None)
+
+    good_hash = "0123456789abcdef0123456789abcdef"
+    check("api_hash ៣២ hex → ទទួល", credentials.valid_api_hash(good_hash) == good_hash)
+    check("api_hash ខ្លី «abcd» → បដិសេធ", credentials.valid_api_hash("abcd") is None)
+    check("api_hash មានតួអក្សរខុស → បដិសេធ", credentials.valid_api_hash("z" * 32) is None)
+
+    token = credentials.encrypt_credential("3141592")
+    check("api_id ciphertext ≠ plaintext", "3141592" not in token)
+    check("decrypt api_id ត្រឡប់ដើម", credentials.decrypt_credential(token) == "3141592")
+
+    phone = "+85517000123"
+    async with db_session() as session:
+        account = await crud.create_account(
+            session,
+            phone=phone,
+            session_encrypted=session_store.encrypt(fake_session(phone)),
+            tg_api_id_encrypted=credentials.encrypt_credential("3141592"),
+            tg_api_hash_encrypted=credentials.encrypt_credential(good_hash),
+        )
+        account_id = account.id
+    async with db_session() as session:
+        stored = await crud.get_account(session, account_id)
+    check("stored_credentials decrypt → (3141592, hash)", credentials.stored_credentials(stored) == (3141592, good_hash))
+    check("is_configured = True", credentials.is_configured(stored))
+    check("resolve ជ្រើស creds របស់គណនី", credentials.resolve(stored) == (3141592, good_hash))
+    check("ciphertext ក្នុង DB មិនមែន plaintext", good_hash not in (stored.tg_api_hash_encrypted or ""))
+
+    async with db_session() as session:
+        bare = await crud.create_account(
+            session, phone="+85517000124", session_encrypted=session_store.encrypt(fake_session("bare"))
+        )
+        bare_id = bare.id
+    async with db_session() as session:
+        bare = await crud.get_account(session, bare_id)
+    check("គ្មាន creds → stored_credentials None", credentials.stored_credentials(bare) is None)
+    env_creds = (settings.tg_api_id, settings.tg_api_hash)
+    check("គ្មាន creds របស់គណនី → fallback ទៅ .env", credentials.resolve(bare) == env_creds)
+    # settings ជា frozen dataclass — បិទ .env ដោយប្តូរ helper ជំនួស
+    original_env = credentials.env_credentials
+    credentials.env_credentials = lambda: None
+    try:
+        check("គ្មាន creds + គ្មាន .env → resolve None", credentials.resolve(bare) is None)
+        check("គ្មាន .env → is_configured False", not credentials.is_configured(bare))
+        check("creds របស់គណនីនៅតែដំណើរការ ទោះ .env ទទេ", credentials.resolve(stored) == (3141592, good_hash))
+    finally:
+        credentials.env_credentials = original_env
+    check("mask_phone បិទកណ្តាល", credentials.mask_phone("+85593251670") == "+855****1670")
+
+    from admin_bot.render import account_card
+
+    card = account_card(stored)
+    check("Panel បង្ហាញ ✅ Configured", "✅ Configured" in card)
+    check("Panel មិនបង្ហាញ api_hash", good_hash not in card)
+    check("Panel មិនបង្ហាញ api_id", "3141592" not in card)
+
+
 async def test_sticky_rules() -> None:
     print("\n[2] Sticky binding — ច្បាប់ A→A គ្មានលើកលែង")
     cust = 800000111
@@ -1064,6 +1130,7 @@ async def main() -> int:
     print("🧪 userbot smoke — ជំហានទី ២.១ (គ្មានបណ្តាញ)")
     await test_session_crypto()
     await test_phone_normalization()
+    await test_api_credentials()
     await test_sticky_rules()
     await test_windows()
     await test_budget()

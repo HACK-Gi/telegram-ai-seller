@@ -67,6 +67,10 @@ async def main() -> int:
         )
         con.commit()
         qr_pre = con.execute(f"SELECT {QR_KEEP} FROM qrcodes ORDER BY id").fetchall()  # noqa: S608
+        # គណនីចាស់ — migration ត្រូវបន្ថែមជួងប៉ុណ្ណោះ មិនប៉ះ session/status/enabled
+        acct_pre = con.execute(
+            "SELECT id, phone, session_encrypted, status, enabled FROM telegram_accounts ORDER BY id"
+        ).fetchall()
 
     # ១) ដាក់លំនាំដើមចាស់ «យ fictitious fresh» ដើម្បីឱ្យ refresh កំណត់បាន
     async with dbsession.SessionFactory() as s:
@@ -144,6 +148,44 @@ async def main() -> int:
         check("គណនីផ្សេង → មិនយក QR របស់គណនីនេះ", other is None or other.account_id is None)
         await s.execute(delete(QRCode).where(QRCode.id == qr_new_id))
         await s.execute(delete(Account).where(Account.id == acct_id))
+        await s.commit()
+
+    print("\n[1c] Migration ២.៣ — telegram_accounts credentials additive (session មិនប៉ះ)")
+    from userbot import credentials
+
+    with sqlite3.connect(str(SCRATCH)) as con:
+        acct_cols = {row[1] for row in con.execute("PRAGMA table_info(telegram_accounts)")}
+        acct_post = con.execute(
+            "SELECT id, phone, session_encrypted, status, enabled, "
+            "tg_api_id_encrypted, tg_api_hash_encrypted FROM telegram_accounts ORDER BY id"
+        ).fetchall()
+    check("ជួង tg_api_id_encrypted ត្រូវបានបន្ថែម", "tg_api_id_encrypted" in acct_cols)
+    check("ជួង tg_api_hash_encrypted ត្រូវបានបន្ថែម", "tg_api_hash_encrypted" in acct_cols)
+    check(
+        f"គណនី {len(acct_pre)} ជួរចាស់ — session/status/enabled មិនប្តូរ",
+        [row[:5] for row in acct_post] == acct_pre,
+    )
+    check("គណនីចាស់ទាំងអស់ → creds NULL (មិន guess App ជំនួសម្ចាស់)",
+          all(row[5] is None and row[6] is None for row in acct_post))
+
+    async with dbsession.SessionFactory() as s:
+        cred_acct = await crud.create_account(
+            s,
+            "+85519990008",
+            "encrypted-session-creds",
+            "CREDS MIG",
+            tg_api_id_encrypted=credentials.encrypt_credential("3141592"),
+            tg_api_hash_encrypted=credentials.encrypt_credential("0123456789abcdef0123456789abcdef"),
+        )
+        await s.commit()
+        cred_acct_id = cred_acct.id
+    await migrations.migrate()
+    async with dbsession.SessionFactory() as s:
+        kept = await crud.get_account(s, cred_acct_id)
+        check("migration ម្តងទៀត → creds នៅរក្សា",
+              credentials.stored_credentials(kept) == (3141592, "0123456789abcdef0123456789abcdef"))
+        check("creds ក្នុង DB ជា ciphertext", "0123456789abcdef0123456789abcdef" not in (kept.tg_api_hash_encrypted or ""))
+        await s.execute(delete(Account).where(Account.id == cred_acct_id))
         await s.commit()
 
     print("\n[2] Categories + backfill លើទិន្នន័យពិត (ច្បាប់)")

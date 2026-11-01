@@ -195,8 +195,10 @@ class FakeClientFactory:
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
         self.instances: list[FakeClient] = []
+        self.creds: list[tuple[int, str]] = []
 
-    def __call__(self, device_index: int) -> FakeClient:
+    def __call__(self, device_index: int, api_id: int, api_hash: str) -> FakeClient:
+        self.creds.append((api_id, api_hash))
         client = FakeClient(**self.kwargs)
         self.instances.append(client)
         return client
@@ -650,16 +652,49 @@ async def main() -> int:
         chat_login._coordinator = chat_login.LoginCoordinator(client_factory=factory)  # noqa: SLF001
         return factory
 
+    # តម្លៃដាច់គេ — បើជាលេខធម្មតា វានឹងឃើញ «លេច» ក្នុងឧទាហរណ៍/លេខផ្សេង ហើយការតេស្តក្លាយជាកុហក
+    API_ID = "3141592"
+    API_HASH = "0123456789abcdef0123456789abcdef"
+
+    async def start_login(phone: str) -> None:
+        """`/addaccount` → api_id → api_hash ដល់ចំនុចដែល Bot ផ្ញើ OTP។"""
+        await panel.msg(f"/addaccount {phone}", user_id=STAFF, expect_reply=False)
+        await panel.msg(API_ID, user_id=STAFF, expect_reply=False)
+        await panel.msg(API_HASH, user_id=STAFF, expect_reply=False)
+
     mark = panel.mark()
     await panel.msg("/addaccount 12abc", user_id=STAFF)
     expect("លេខខុស → បដិសេធ", panel.said_since(mark, "លេខទូរស័ព្ទខុសទ្រង់ទ្រាយ"))
+
+    # api_id / api_hash — validation + auto-delete
+    factory = use_coordinator()
+    mark = panel.mark()
+    phone_mark = len(panel.session.sent)
+    await panel.msg("/addaccount +85512777009", user_id=STAFF, expect_reply=False)
+    expect("សារលេខទូរស័ព្ទត្រូវលុប", "deleteMessage" in panel.session.sent[phone_mark:])
+    expect("ណែនាំទៅ my.telegram.org", await wait_for_text_since(panel, mark, "my.telegram.org"))
+    await panel.msg("12ab", user_id=STAFF, expect_reply=False)
+    expect("api_id ខុស → បដិសេធ", panel.said_since(mark, "api_id មិនត្រឹមត្រូវ"))
+    api_mark = len(panel.session.sent)
+    await panel.msg(API_ID, user_id=STAFF, expect_reply=False)
+    expect("សារ api_id ត្រូវលុប", "deleteMessage" in panel.session.sent[api_mark:])
+    expect("សួរ api_hash", panel.said_since(mark, "App api_hash"))
+    await panel.msg("abcd", user_id=STAFF, expect_reply=False)
+    expect("api_hash ខុស → បដិសេធ", panel.said_since(mark, "api_hash មិនត្រឹមត្រូវ"))
+    expect("គ្មាន OTP មុន api_hash ត្រឹមត្រូវ", panel.says_not_since(mark, "កូដ OTP"))
+    await panel.msg("/cancel", user_id=STAFF)
+    expect("/cancel ពេលនៅ api_hash → គ្មាន pending", not chat_login.get_coordinator().has_pending(STAFF, STAFF))
 
     factory = use_coordinator()
     login_phone = "+85512777000"
     otp = "741852"
     mark = panel.mark()
-    await panel.msg(f"/addaccount {login_phone}", user_id=STAFF, expect_reply=False)
+    secrets_mark = len(panel.session.sent)
+    await start_login(login_phone)
     expect("OTP ត្រូវសួរ", await wait_for_text_since(panel, mark, "កូដ OTP"))
+    expect("api_id/api_hash ផ្ញើទៅ client", factory.creds == [(int(API_ID), API_HASH)])
+    deleted = [item for item in panel.session.sent[secrets_mark:] if "deleteMessage" in item]
+    expect("សារ phone/api_id/api_hash ត្រូវលុប ៣", len(deleted) >= 3)
     expect("coordinator មាន pending", chat_login.get_coordinator().has_pending(STAFF, STAFF))
     api_mark = len(panel.session.sent)
     await panel.msg(otp, user_id=STAFF, expect_reply=False)
@@ -673,13 +708,23 @@ async def main() -> int:
         expect("គណនីជាប់នឹង staff (owner_admin_id)", logged.owner_admin_id == STAFF)
         expect("session ក្នុង DB ជា ciphertext", "FAKESESSION" not in (logged.session_encrypted or ""))
         expect("decrypt ត្រឡប់ session ដើម", session_store.decrypt(logged.session_encrypted).startswith("1FAKESESSION"))
+        from userbot import credentials as _credentials
+
+        expect("api_id ក្នុង DB ជា ciphertext", API_ID not in (logged.tg_api_id_encrypted or ""))
+        expect("api_hash ក្នុង DB ជា ciphertext", API_HASH not in (logged.tg_api_hash_encrypted or ""))
+        expect(
+            "decrypt creds ត្រឡប់ api_id/api_hash ដើម",
+            _credentials.stored_credentials(logged) == (int(API_ID), API_HASH),
+        )
+    expect("api_hash មិនដែលចេញជាសារ Bot", panel.says_not_since(mark, API_HASH))
+    expect("api_id មិនដែលចេញជាសារ Bot", panel.says_not_since(mark, API_ID))
     expect("session string មិនដែលចេញ chat", panel.says_not_since(0, "FAKESESSION"))
     expect("FakeClient ត្រូវ disconnect", factory.last.disconnected)
 
     factory = use_coordinator(need_2fa=True)
     password = "smoke-2fa-secret"
     mark = panel.mark()
-    await panel.msg(f"/addaccount {login_phone}", user_id=STAFF, expect_reply=False)
+    await start_login(login_phone)
     await wait_for_text_since(panel, mark, "កូដ OTP")
     await panel.msg(otp, user_id=STAFF, expect_reply=False)
     expect("2FA ត្រូវសួរ", await wait_for_text_since(panel, mark, "ផ្ញើពាក្យសម្ងាត់ Cloud"))
@@ -692,7 +737,7 @@ async def main() -> int:
 
     factory = use_coordinator(reject_code="000000")
     mark = panel.mark()
-    await panel.msg("/addaccount +85512777001", user_id=STAFF, expect_reply=False)
+    await start_login("+85512777001")
     await wait_for_text_since(panel, mark, "កូដ OTP")
     for attempt in range(3):
         await panel.msg("000000", user_id=STAFF, expect_reply=False)
@@ -704,7 +749,7 @@ async def main() -> int:
 
     factory = use_coordinator()
     mark = panel.mark()
-    await panel.msg("/addaccount +85512777002", user_id=STAFF, expect_reply=False)
+    await start_login("+85512777002")
     await wait_for_text_since(panel, mark, "កូដ OTP")
     expect("pending មុន /cancel", chat_login.get_coordinator().has_pending(STAFF, STAFF))
     mark = panel.mark()
@@ -719,7 +764,7 @@ async def main() -> int:
     saved_timeout = chat_login.CODE_TIMEOUT
     chat_login.CODE_TIMEOUT = 0.2
     mark = panel.mark()
-    await panel.msg("/addaccount +85512777003", user_id=STAFF, expect_reply=False)
+    await start_login("+85512777003")
     expect("អត់ឆ្លើយក្នុង CODE_TIMEOUT → បញ្ចប់", await wait_for_text_since(panel, mark, "មិនឃើញកូដ OTP"))
     chat_login.CODE_TIMEOUT = saved_timeout
     expect("គ្មាន pending ក្រោយ timeout", not chat_login.get_coordinator().has_pending(STAFF, STAFF))

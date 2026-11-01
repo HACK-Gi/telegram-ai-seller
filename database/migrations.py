@@ -15,7 +15,7 @@ from database.models import Base
 
 log = logging.getLogger("db.migrate")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # SQLite ហាម NOT NULL ដោយគ្មាន literal default, ហាម UNIQUE/PRIMARY KEY លើជួងថ្មី,
 # ហើយជួងដែលមាន REFERENCES ត្រូវតែ default NULL — ដូច្នេះ child FK ទាំងអស់ជា plain nullable។
@@ -34,6 +34,9 @@ ADDITIVE_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # ជំហានទី ២.២ — RBAC + device fingerprint ថេរ
         ("owner_admin_id", "BIGINT"),
         ("device_index", "INTEGER"),
+        # ជំហានទី ២.៣ — App credentials ក្នុងមួយគណនី (Fernet) ជំនួស .env
+        ("tg_api_id_encrypted", "TEXT"),
+        ("tg_api_hash_encrypted", "TEXT"),
     ],
     "customers": [
         ("account_id", "INTEGER"),

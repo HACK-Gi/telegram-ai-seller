@@ -17,11 +17,10 @@ from typing import Any
 
 from telethon import TelegramClient, events
 
-from config import settings
 from database import crud
 from database.models import AccountStatus
 from database.session import db_session
-from userbot import session_store
+from userbot import credentials, session_store
 from userbot.catalog import Catalog
 from userbot.outbox import PRIORITY_REPLY, Outbox, OutboxItem, PeerRef, TelethonSender
 from userbot.safety import describe_error
@@ -48,16 +47,26 @@ class ManagerError(RuntimeError):
     pass
 
 
-def make_client(account_id: int, session: Any, device_index: int | None = None) -> TelegramClient:
+def make_client(
+    account_id: int,
+    session: Any,
+    device_index: int | None = None,
+    *,
+    api_id: int,
+    api_hash: str,
+) -> TelegramClient:
     """device_index ត្រូវរក្សាទុកក្នុង DB (`Account.device_index`) ដើម្បីឱ្យ fingerprint
     ពេល login (chat/CLI) ដូចគ្នានឹងពេល manager ភ្ជាប់រាល់ពេល reconnect — បើប្តូរ
-    Telegram ឃើញ «device ថ្មី» រាល់ដងដែល reconnect ដែលជា signal នៃ bot farm។"""
+    Telegram ឃើញ «device ថ្មី» រាល់ដងដែល reconnect ដែលជា signal នៃ bot farm។
+
+    `api_id`/`api_hash` ជារបស់គណនីនេះ (មើល `userbot.credentials.resolve`) — auth key
+    ត្រូវបានចងនឹង App ដែលបង្កើតវា ដូច្នេះការប្តូរ App ធ្វើឱ្យ session ប្រើមិនបាន។"""
     index = device_index if device_index is not None else account_id
     device, system, version = DEVICE_POOL[index % len(DEVICE_POOL)]
     return TelegramClient(
         session,
-        settings.tg_api_id,
-        settings.tg_api_hash,
+        api_id,
+        api_hash,
         device_model=device,
         system_version=system,
         application_version=version,
@@ -83,6 +92,7 @@ class AccountManager:
         self._tasks: list[asyncio.Task] = []
         self._global_stopped = False
         self._started = False
+        self._missing_creds: set[int] = set()
 
     # ---------- ទំនាក់ទំនង ----------
     def set_notify(self, notify: Callable[[str], Awaitable[None]]) -> None:
@@ -131,9 +141,12 @@ class AccountManager:
                 log.exception("reconcile កំហុស")
 
     async def reconcile(self) -> None:
-        """ដូរភាពរវាង DB intent និង clients ពិត — hot-reload ដោយគ្មាន restart។"""
-        if not settings.tg_api_id or not settings.tg_api_hash:
-            return
+        """ដូរភាពរវាង DB intent និង clients ពិត — hot-reload ដោយគ្មាន restart។
+
+        គ្មាន gate តាម .env ទៀតទេ៖ credentials ជារបស់គណនីនីមួយៗ ដូច្នេះគណនីដែលមាន
+        App របស់ខ្លួនអាចភ្ជាប់បាន ទោះ .env ទទេ។ គណនីដែលគ្មាន creds ត្រូវរំលងនៅ
+        `start_client` (មិនបើក client ដោយសង្ឃឹមថានឹងជោគជ័យ)។
+        """
         async with db_session() as session:
             flag = await crud.get_setting(session, "userbot_enabled", "on")
             self._global_stopped = flag.strip().lower() != "on"
@@ -151,15 +164,37 @@ class AccountManager:
     async def start_client(self, account) -> bool:
         if account.id in self._clients:
             return True
+        creds = credentials.resolve(account)
+        if creds is None:
+            message = (
+                "គ្មាន api_id/api_hash — បន្ថែមគណនីនេះឡើងវិញតាម /addaccount "
+                "(App ពី my.telegram.org)"
+            )
+            async with db_session() as db:
+                await crud.set_account_status(db, account.id, AccountStatus.OFFLINE, message)
+            if account.id not in self._missing_creds:
+                self._missing_creds.add(account.id)
+                log.warning("គណនី #%s គ្មាន api credentials — រំលង", account.id)
+                await self.notify(f"🔑 គណនី {credentials.mask_phone(account.phone)} ភ្ជាប់មិនបាន — {message}")
+            return False
+        self._missing_creds.discard(account.id)
+
         try:
             session = session_store.load_session(account.session_encrypted)
         except session_store.SessionCryptoError as exc:
             async with db_session() as db:
                 await crud.set_account_status(db, account.id, AccountStatus.OFFLINE, str(exc))
-            await self.notify(f"🔐 គណនី {account.phone} ភ្ជាប់មិនបាន — {exc}")
+            await self.notify(f"🔐 គណនី {credentials.mask_phone(account.phone)} ភ្ជាប់មិនបាន — {exc}")
             return False
 
-        client = make_client(account.id, session, getattr(account, "device_index", None))
+        api_id, api_hash = creds
+        client = make_client(
+            account.id,
+            session,
+            getattr(account, "device_index", None),
+            api_id=api_id,
+            api_hash=api_hash,
+        )
         try:
             await client.connect()
             if not await client.is_user_authorized():

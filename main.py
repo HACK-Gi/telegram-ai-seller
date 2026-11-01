@@ -73,18 +73,17 @@ async def run() -> None:
         await bot.session.close()
         return
 
-    manager = None
-    if settings.tg_api_id and settings.tg_api_hash:
-        from userbot.chat_login import get_coordinator
-        from userbot.manager import get_manager
+    # Userbot ត្រូវចាប់ផ្តើមជានិច្ច៖ api_id/api_hash ជារបស់គណនីនីមួយៗ (my.telegram.org) ដូច្នេះ
+    # .env ទទេមិនមែនជាឧបសគ្គទៀតទេ — manager ភ្ជាប់តែគណនីដែលមាន creds ប៉ុណ្ណោះ។
+    from userbot.manager import get_manager
 
-        async def notify_owner(text: str) -> None:
-            await bot.send_message(settings.owner_id, text)
+    async def notify_owner(text: str) -> None:
+        await bot.send_message(settings.owner_id, text)
 
-        manager = get_manager(notify=notify_owner)
-        await manager.start()
-    else:
-        log.warning("មិនមាន TG_API_ID/TG_API_HASH — userbot នឹងមិនដំណើរការទេ (Admin Bot ដំណើរការធម្មតា)")
+    manager = get_manager(notify=notify_owner)
+    await manager.start()
+    if not (settings.tg_api_id and settings.tg_api_hash):
+        log.info("គ្មាន TG_API_ID/TG_API_HASH ក្នុង .env — ប្រើ credentials របស់គណនីនីមួយៗជំនួស")
 
     try:
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())

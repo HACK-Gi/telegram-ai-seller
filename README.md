@@ -33,7 +33,7 @@ cp .env.example .env      # រួចកែតម្លៃក្នុង .env
 | `ADMIN_IDS` | ID ជំនួយ (ឆ្លាស់គ្នាដោយ `,`) អាចទទេ |
 | `AI_BACKEND` | `mock` \| `qoder_cli` \| `openai` \| `ollama` |
 | `SESSION_FERNET_KEY` | បង្កើត៖ `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` (ប្រើនៅជំហានទី ២) |
-| `TG_API_ID` / `TG_API_HASH` | ពី `my.telegram.org/api/credentials` (ប្រើនៅជំហានទី ២) |
+| `TG_API_ID` / `TG_API_HASH` | **មិនចាំបាច់** — api_id/api_hash ជារបស់គណនីនីមួយៗ (វាយតាម `/addaccount`, Encrypt ក្នុង DB)។ ទុកទទេ = គ្មាន fallback សម្រាប់គណនីចាស់ |
 
 លើកដំបូង អាចដាក់ `BOT_TOKEN=MOCK` និង `USE_MOCK_BOT=true` បាន ព្រោះប្រព័ន្ធមាន
 Mock Telegram session ក្នុង `admin_bot/mock.py` សម្រាប់តេស្ត។
@@ -147,18 +147,22 @@ data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — 
   ៥–១៥ វិនាទីរវាងសារ, រៀប typing, កំណត់ ៥០ សារ/ម៉ោង និង ២០០ សារ/ថ្ងៃ ក្នុងមួយគណនី,
   មាន warm-up ៧ ថ្ងៃ, និង **មិន log session ឬ OTP**។
 * ការបន័ែមគណនីធ្វើ **តាម chat Admin Bot** (`/addaccount` ឬចុច ➕ ក្នុង menu Accounts) ហើយ
-  សារ OTP/2FA ដែល admin វាយចូល **ត្រូវលុបភ្លាម** ពេលអានរួច (`_delete_secret`) ទើប code
-  មិនសល់ក្នុង history របស់ Bot។ OTP/2FA/session មិនដែលចូល log ឬ chat ឡើយ — session
-  string រក្សាទុក Fernet ក្នុង DB តែប៉ុណ្ណោះ។ (CLI login ត្រូវបានលុបចេញ — មានផ្លូវ chat តែមួយ)
+  សារលេខទូរស័ព្ទ/api_id/api_hash/OTP/2FA ដែល admin វាយចូល **ត្រូវលុបភ្លាម** ពេលអានរួច
+  (`_delete_secret`) ទើបគ្មានអ្វីសល់ក្នុង history របស់ Bot។ ទាំងនោះមិនដែលចូល log ឬ Panel ឡើយ —
+  session + api credentials រក្សាទុក Fernet ក្នុង DB តែប៉ុណ្ណោះ (Panel បង្ហាញតែ «✅ Configured»)។
+  (CLI login ត្រូវបានលុបចេញ — មានផ្លូវ chat តែមួយ)
 * `.env` និង `data/` ស្ថិតក្នុង `.gitignore` — កុំពិនិត្យវាចូល repository ឡើយ។
 
 ### ៦.១ បើក Userbot (ជំហានទី ២.១)
 
-1. ដាក់ `TG_API_ID`, `TG_API_HASH`, `SESSION_FERNET_KEY` ក្នុង `.env`
-2. ចុះឈ្មោះគណនីនីមួយៗ **តាម chat Admin Bot**៖ `/addaccount +855XXXXXXXX` (ឬ `+addaccount`
-   តាមប៊ូតុង ➕) — Bot សួរលេខ → OTP → 2FA (បើមាន) → រក្សាទុក session។ សារ OTP/2FA ត្រូវ
-   **លុបភ្លាម** បន្ទាប់ពីអាន, ខុស ៣ ដង ឬអត់ឆ្លើយ ៥ នាទី (OTP) / ៣ នាទី (2FA) → login បញ្ចប់ខ្លួនឯង,
-   និង `/cancel` បោះបង់គ្រប់ពេល។ (ផ្លូវ CLI លុបចេញហើយ — មិនមាន OTP វាយក្នុង terminal ទេ)
+1. ដាក់តែ `SESSION_FERNET_KEY` ក្នុង `.env` (បង្កើត៖ `python scripts/generate_keys.py --write`)។
+   `TG_API_ID`/`TG_API_HASH` **មិនត្រូវការទេ** — វាជារបស់គណនីនីមួយៗ។
+2. ចុះឈ្មោះគណនីនីមួយៗ **តាម chat Admin Bot**៖ `/addaccount +855XXXXXXXX` (ឬចុច ➕) —
+   Bot សួរតាមលំដាប់៖ **លេខទូរស័ព្ទ → api_id → api_hash → OTP → 2FA (បើមាន)**។
+   លេខទូរស័ព្ទ/api_id/api_hash/OTP/2FA **ត្រូវលុបភ្លាម** ពេលអានរួច, ខុស ៣ ដង ឬអត់ឆ្លើយ
+   ៥ នាទី (OTP) / ៣ នាទី (2FA) → login បញ្ចប់ខ្លួនឯង, និង `/cancel` បោះបង់គ្រប់ពេល។
+   api_id/api_hash យកពី **my.telegram.org → API development tools** របស់គណនីនោះ
+   (bot ណែនាំជំហានផ្ទាល់ក្នុង chat)។ Session + api credentials រក្សាទុកជា Fernet ក្នុង DB។
 3. បើក `python main.py` — គណនីដែល `enabled` ភ្ជាប់ស្វ័យប្រវត្តិ; បន្ថែម/បិទគណនីថ្មី
    តាម panel ឃើញផលក្នុង ≤ ៦០ វិនាទី (hot-reload គ្មាន restart — coordinator ហៅ `reconcile()` ភ្លាម)
 4. បញ្ជាសង្គ្រោះបន្ទាន់ពី Telegram ផ្ទាល់ (send ទៅលេខគណនី userbot)៖

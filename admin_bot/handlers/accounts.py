@@ -20,7 +20,7 @@ from admin_bot.scope import Scope
 from database import crud, db_session
 from database.models import Account
 from helpers import esc
-from userbot import chat_login
+from userbot import chat_login, credentials
 
 router = Router()
 log = logging.getLogger("admin.accounts")
@@ -29,18 +29,52 @@ NOT_FOUND = "🚫 រកមិនឃើញគណនីនេះក្នុង�
 
 HOWTO = (
     "📱 <b>បន័ែមគណនី</b> — ចុច ➕ ឬរាយការ <code>/addaccount +855XXXXXXXX</code>\n\n"
-    "1. Bot សួរលេខទូរស័ព្ទ → Telegram ផ្ញើ OTP ទៅ<b>គណនីរបស់អ្នក</b> (មិនមែន chat នេះទេ)\n"
-    "2. វាយកូដ OTP ចូល → <b>សាររបស់អ្នកត្រូវលុបភ្លាម</b> ពេលអានរួច\n"
-    "3. បើគណនីមាន 2FA → វាយពាក្យសម្ងាត់ (សារក៏ត្រូវលុបដែរ)\n"
-    "4. Session ត្រូវ encrypt (Fernet) ទុកក្នុង DB ហើយ Userbot ភ្ជាប់ក្នុង ៦០ វិនាទី\n\n"
+    "1. Bot សួរលេខទូរស័ព្ទ → បន្ទាប់មកសួរ <b>api_id</b> និង <b>api_hash</b> របស់ App ដែលបងបង្កើតនៅ\n"
+    "   my.telegram.org (App ជារបស់គណនីនីមួយៗ — មិនត្រូវការ <code>.env</code> ទេ)\n"
+    "2. Telegram ផ្ញើ OTP ទៅ<b>គណនីរបស់បង</b> (មិនមែន chat នេះទេ) → វាយកូដចូល\n"
+    "3. បើគណនីមាន 2FA → វាយពាក្យសម្ងាត់\n"
+    "4. Session + api_id + api_hash ត្រូវ encrypt (Fernet) ទុកក្នុង DB ហើយ Userbot ភ្ជាប់ក្នុង ៦០ វិនាទី\n\n"
+    "🔒 សារទាំងអស់ដែលមានលេខទូរស័ព្ទ/api_id/api_hash/OTP/2FA <b>ត្រូវលុបភ្លាម</b> ពេលអានរួច។\n"
     "⚠️ កុំវាយ OTP របស់គណនីដែលអ្នក<b>មិន</b>កាន់កាប់ — Panel នេះសាកល្បង login ពិត។\n"
     "ℹ️ បោះបង់ពេលណាក៏បានដោយ <code>/cancel</code>។\n\n"
-    "ត្រូវការ <code>TG_API_ID</code> + <code>TG_API_HASH</code> + <code>SESSION_FERNET_KEY</code> ក្នុង <code>.env</code>។"
+    "ត្រូវការតែ <code>SESSION_FERNET_KEY</code> ក្នុង <code>.env</code> (សម្រាប់ Encrypt)។"
+)
+
+API_GUIDE = (
+    "✅ <b>លេខទូរស័ព្ទបានកត់ត្រា</b> (សារលុបដោយស្វ័យប្រវត្តិ)\n\n"
+    "🔑 <b>ជំហាន ២/៤: App credentials</b>\n\n"
+    "Telegram តម្រូវឱ្យគណនីនីមួយៗបង្កើត App ផ្ទាល់ខ្លួន៖\n"
+    "1️⃣ បើក https://my.telegram.org\n"
+    "2️⃣ Login ដោយ<b>លេខទូរស័ព្ទ</b>ខាងលើ + OTP ដែល Telegram ផ្ញើមក\n"
+    "3️⃣ ចុច <b>API development tools</b>\n"
+    "4️⃣ បំពេញឈ្មោះអ្វីក៏បាន (ឧ. MySeller) → <b>Create application</b>\n"
+    "5️⃣ ចម្លង <b>App api_id</b> (លេខ ៦–១០ ខ្ទង់) និង <b>App api_hash</b> (៣២ តួអក្សរ)\n\n"
+    "📤 ឥឡូវផ្ញើ <b>api_id</b> មកទីនេះ (សារនឹងត្រូវលុបភ្លាម)\n"
+    "<i>បញ្ឈប់បានគ្រប់ពេលដោយ <code>/cancel</code> ។</i>"
+)
+
+HASH_PROMPT = (
+    "✅ <b>api_id បានកត់ត្រា</b> (សារលុបដោយស្វ័យប្រវត្តិ)\n\n"
+    "🔑 <b>ជំហាន ៣/៤: api_hash</b>\n"
+    "ផ្ញើ <b>App api_hash</b> (៣២ តួអក្សរ ឧ. <code>abcdef0123456789abcdef0123456789</code>)។\n\n"
+    "🔒 api_id និង api_hash ត្រូវ Encrypt មុនរក្សាទុក — មិនដែលបង្ហាញក្នុង Panel ឡើយ។"
+)
+
+API_ID_RETRY = (
+    "❌ api_id មិនត្រឹមត្រូវ — ត្រូវជា<b>លេខ</b> ៦–១០ ខ្ទង់ (ឧ. <code>1234567</code>)។\n"
+    "សូមពិនិត្យ my.telegram.org → API development tools ឡើងវិញ។"
+)
+
+API_HASH_RETRY = (
+    "❌ api_hash មិនត្រឹមត្រូវ — ត្រូវជា ៣២ តួអក្សរ (អក្សរ a–f និងលេខ 0–9)។\n"
+    "សូមចម្លងម្តងទៀតពី my.telegram.org។"
 )
 
 
 class LoginStates(StatesGroup):
     waiting_phone = State()
+    waiting_api_id = State()
+    waiting_api_hash = State()
     waiting_code = State()
     waiting_password = State()
 
@@ -174,11 +208,20 @@ async def _ask_phone(event: Message | CallbackQuery, state: FSMContext) -> None:
         await event.answer(prompt)
 
 
-async def _begin_login(message: Message, state: FSMContext, scope: Scope, phone: str) -> None:
+async def _begin_login(
+    message: Message,
+    state: FSMContext,
+    scope: Scope,
+    phone: str,
+    api_id: int,
+    api_hash: str,
+) -> None:
     error = await chat_login.get_coordinator().begin(
         chat_id=message.chat.id,
         user_id=scope.admin_id,
         phone=phone,
+        api_id=api_id,
+        api_hash=api_hash,
         name="",
         channel=ChatChannel(message.bot, message.chat.id, state),
     )
@@ -186,7 +229,7 @@ async def _begin_login(message: Message, state: FSMContext, scope: Scope, phone:
         await state.set_state(None)
         await message.answer(error)
         return
-    await state.update_data(login_key=login_key(message, scope))
+    await state.update_data(login_key=login_key(message, scope), login_api_id=None)
 
 
 @router.callback_query(F.data == "acc:add")
@@ -199,12 +242,58 @@ async def cmd_add_account(message: Message, command: CommandObject, state: FSMCo
     if not command.args:
         await _ask_phone(message, state)
         return
-    await _begin_login(message, state, scope, command.args.split()[0])
+    await _accept_phone(message, state, command.args.split()[0])
+
+
+async def _accept_phone(message: Message, state: FSMContext, raw: str) -> None:
+    """លេខត្រឹមត្រូវ → លុបសារ → សួរ api_id។ លេខខុស → បន្តស្ថិតក្នុង waiting_phone។"""
+    normalized = chat_login.normalize_phone(raw)
+    if normalized is None:
+        await state.set_state(LoginStates.waiting_phone)
+        await message.answer(
+            "📵 លេខទូរស័ព្ទខុសទ្រង់ទ្រាយ — វាយបានទាំង <code>093251670</code> និង <code>+85593251670</code>\n"
+            "សូមផ្ញើលេខដែលមាននៅក្នុង Telegram App របស់បង។"
+        )
+        return
+    await _delete_secret(message)
+    await state.update_data(login_phone=normalized)
+    await state.set_state(LoginStates.waiting_api_id)
+    await message.answer(API_GUIDE, disable_web_page_preview=True)
 
 
 @router.message(LoginStates.waiting_phone, F.text)
 async def md_login_phone(message: Message, state: FSMContext, scope: Scope) -> None:
-    await _begin_login(message, state, scope, message.text.strip())
+    await _accept_phone(message, state, message.text.strip())
+
+
+@router.message(LoginStates.waiting_api_id, F.text)
+async def md_login_api_id(message: Message, state: FSMContext, scope: Scope) -> None:
+    api_id = credentials.valid_api_id(message.text)
+    if api_id is None:
+        await message.answer(API_ID_RETRY)
+        return
+    await _delete_secret(message)
+    await state.update_data(login_api_id=api_id)
+    await state.set_state(LoginStates.waiting_api_hash)
+    await message.answer(HASH_PROMPT)
+
+
+@router.message(LoginStates.waiting_api_hash, F.text)
+async def md_login_api_hash(message: Message, state: FSMContext, scope: Scope) -> None:
+    api_hash = credentials.valid_api_hash(message.text)
+    if api_hash is None:
+        await message.answer(API_HASH_RETRY)
+        return
+    await _delete_secret(message)
+    data = await state.get_data()
+    phone = str(data.get("login_phone") or "")
+    api_id = int(data.get("login_api_id") or 0)
+    if not phone or not api_id:
+        await state.set_state(None)
+        await message.answer("⚠️ ការបន័ែមគណនីដាច់កណ្តាល — សូមចាប់ផ្តើម <code>/addaccount</code> ម្ដងទៀត")
+        return
+    await message.answer("📨 កំពុងផ្ញើ OTP ទៅ Telegram…")
+    await _begin_login(message, state, scope, phone, api_id, api_hash)
 
 
 @router.message(LoginStates.waiting_code, F.text)

@@ -269,6 +269,10 @@ class Account(Base):
     owner_admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     # fingerprint ថេរ ដើម្បីឱ្យ device ពេល login == ពេល manager ភ្ជាប់រាល់ពេល reconnect
     device_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # App credentials ដែលម្ចាស់គណនីបង្កើតនៅ my.telegram.org — Fernet ciphertext ប៉ុណ្ណោះ។
+    # NULL = មិនទាន់កំណត់ → fallback ទៅ TG_API_ID/TG_API_HASH ក្នុង .env (គណនីចាស់)
+    tg_api_id_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tg_api_hash_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AccountProduct(Base):

@@ -1204,6 +1204,8 @@ async def create_account(
     owner_admin_id: int | None = None,
     enabled: bool = False,
     device_index: int | None = None,
+    tg_api_id_encrypted: str | None = None,
+    tg_api_hash_encrypted: str | None = None,
 ) -> Account:
     account = Account(
         phone=phone,
@@ -1213,6 +1215,8 @@ async def create_account(
         owner_admin_id=owner_admin_id,
         enabled=enabled,
         device_index=device_index,
+        tg_api_id_encrypted=tg_api_id_encrypted,
+        tg_api_hash_encrypted=tg_api_hash_encrypted,
         warmup_started_at=utcnow(),  # គណនីថ្មីត្រូវ warm-up 7 ថ្ងៃដោយស្វ័យប្រវត្តិ
     )
     session.add(account)

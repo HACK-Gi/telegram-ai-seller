@@ -81,12 +81,19 @@ def customer_card(customer: Customer) -> str:
 
 def account_card(account: Account) -> str:
     from database.models import AccountStatus
+    from userbot import credentials
 
+    # បង្ហាញស្ថានភាពប៉ុណ្ណោះ — api_id/api_hash មិនដែលចេញជាអត្ថបទ (ទោះ masked) ឡើយ
+    stored = credentials.stored_credentials(account)
+    key_line = "🔑 api: ✅ Configured" if stored else "🔑 api: ❌ Not configured"
+    if stored is None and credentials.env_credentials() is not None:
+        key_line += " · ប្រើ .env"
     return "\n".join(
         [
             f"📱 <b>{esc(account.phone)}</b>" + ("  ⭐ Primary" if account.is_primary else ""),
             f"👤 {esc(account.name or '—')} · {AccountStatus.LABELS.get(account.status, account.status)}",
             f"🤖 AI: {'🟢 on' if account.ai_enabled else '⚪ off'} · បង្កើត {format_dt(account.created_at)}",
+            key_line,
         ]
         + ([f"⚠️ {esc(shorten(account.last_error, 160))}"] if account.last_error else [])
     )
