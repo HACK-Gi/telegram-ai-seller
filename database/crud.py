@@ -910,7 +910,7 @@ async def create_order(
 async def pick_order_account(
     session: AsyncSession, *, owner_admin_id: int | None = None, account_ids: tuple[int, ...] | None = None
 ) -> int | None:
-    """គណនីសម្រាប់ Order ដែល admin បង្កើតដោយដៃ — primary របស់ម្ចាស់នั้น បើគ្មាន → ID តូចបំផុត។
+    """គណនីសម្រាប់ Order ដែល admin បង្កើតដោយដៃ — primary របស់ admin នោះ បើគ្មាន → ID តូចបំផុត។
 
     ត្រឡប់ None ពេល admin គ្មានគណនី (handler ត្រូវបដិសេធ មិនមែនទុក order គ្មាន attribution ទេ)។
     """
