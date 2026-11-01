@@ -47,7 +47,7 @@ def _fernet() -> Fernet:
 
 def encrypt(plaintext: str) -> str:
     if not plaintext:
-        raise SessionCryptoError("session ទទេ — ចុះឈ្មោះឡើងវិញតាម `python -m userbot.add_account`")
+        raise SessionCryptoError("session ទទេ — ចុះឈ្មោះឡើងវិញតាម /addaccount ក្នុង Admin Bot")
     safety.register_secret(plaintext)
     token = _fernet().encrypt(plaintext.encode()).decode()
     safety.register_secret(token)

@@ -163,7 +163,7 @@ class AccountManager:
         try:
             await client.connect()
             if not await client.is_user_authorized():
-                raise RuntimeError("session មិន authorized — ចុះឈ្មោះឡើងវិញតាម `python -m userbot.add_account`")
+                raise RuntimeError("session មិន authorized — ចុះឈ្មោះឡើងវិញតាម /addaccount ក្នុង Admin Bot")
             me = await client.get_me()
         except Exception as exc:  # noqa: BLE001
             name = type(exc).__name__

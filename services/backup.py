@@ -38,7 +38,7 @@ def _remove_wal_sidecars(path: Path) -> None:
 
 
 def _copy_database(source: Path, destination: Path) -> None:
-    """SQLite online backup — រាប់បញ្ចូលទាំង WAL frames ដែល process ផ្សេង (add_account) សរសេរនៅ។"""
+    """SQLite online backup — រាប់បញ្ចូលទាំង WAL frames ដែល process ផ្សេង (smoke scripts) សរសេរនៅ។"""
     destination.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(source, timeout=5.0) as origin, sqlite3.connect(destination) as target:
         origin.backup(target)

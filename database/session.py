@@ -24,8 +24,8 @@ def _ensure_sqlite_dir(url: str) -> None:
 
 _ensure_sqlite_dir(settings.database_url)
 
-# `timeout` របស់ sqlite3 = busy timeout (វិនាទី)។ ចាំបាច់ព្រោះ `python -m userbot.add_account`
-# ដំណើរការក្នុង process ដាច់ដោយឡែក ប៉ុន្តែសរសេរចូល SQLite file តែមួយនឹង main.py។
+# `timeout` របស់ sqlite3 = busy timeout (វិនាទី)។ ចាំបាច់ព្រោះ process ដាច់ដោយឡែក
+# (scripts/smoke_test*.py, scheduler jobs) សរសេរចូល SQLite file តែមួយនឹង main.py។
 _connect_args = {"timeout": 5.0} if "sqlite" in settings.database_url else {}
 
 engine = create_async_engine(settings.database_url, echo=False, connect_args=_connect_args)

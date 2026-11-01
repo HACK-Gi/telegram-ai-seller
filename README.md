@@ -133,7 +133,7 @@ userbot/                (ជំហានទី ២.១ — ដំណើរកា
                         សម្ភារៈ → ទិញ → QR) · controls.py (/pause /resume /pauseall
                         /stopbot /startbot /status) · outbox.py (single writer ក្នុង
                         មួយគណនី) · limits.py · session_store.py · safety.py ·
-                        coalescer.py · text_delay.py · add_account.py (CLI login)
+                        coalescer.py · text_delay.py · chat_login.py (login តាម chat)
 data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — gitignore ទាំងអស់
 ```
 
@@ -146,23 +146,27 @@ data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — 
 * ជំហានទី ២ (Userbot) នឹង៖ ចម្លើយ **តែអតិថិជនដែលផ្ញើសារមកមុន (inbound only)**, ពន្យារ
   ៥–១៥ វិនាទីរវាងសារ, រៀប typing, កំណត់ ៥០ សារ/ម៉ោង និង ២០០ សារ/ថ្ងៃ ក្នុងមួយគណនី,
   មាន warm-up ៧ ថ្ងៃ, និង **មិន log session ឬ OTP**។
-* ការបន័ែមគណនីនឹងធ្វើតាម terminal (`python -m userbot.add_account +855XXXXXXXX`)
-  មិនមែនតាម chat ទេ ព្រោះសារក្នុង chat អាចត្រូវសុំពី Telegram/cloud បាន។
+* ការបន័ែមគណនីធ្វើ **តាម chat Admin Bot** (`/addaccount` ឬចុច ➕ ក្នុង menu Accounts) ហើយ
+  សារ OTP/2FA ដែល admin វាយចូល **ត្រូវលុបភ្លាម** ពេលអានរួច (`_delete_secret`) ទើប code
+  មិនសល់ក្នុង history របស់ Bot។ OTP/2FA/session មិនដែលចូល log ឬ chat ឡើយ — session
+  string រក្សាទុក Fernet ក្នុង DB តែប៉ុណ្ណោះ។ (CLI login ត្រូវបានលុបចេញ — មានផ្លូវ chat តែមួយ)
 * `.env` និង `data/` ស្ថិតក្នុង `.gitignore` — កុំពិនិត្យវាចូល repository ឡើយ។
 
 ### ៦.១ បើក Userbot (ជំហានទី ២.១)
 
 1. ដាក់ `TG_API_ID`, `TG_API_HASH`, `SESSION_FERNET_KEY` ក្នុង `.env`
-2. ចុះឈ្មោះគណនីនីមួយៗក្នុង terminal៖ `python -m userbot.add_account +855XXXXXXXX --name "ហាង ១"`
-   (OTP/2FA វាយក្នុង terminal — មិនដែលចូល log/DB/chat ទេ; session រក្សាទុក Fernet ប៉ុណ្ណោះ)
+2. ចុះឈ្មោះគណនីនីមួយៗ **តាម chat Admin Bot**៖ `/addaccount +855XXXXXXXX` (ឬ `+addaccount`
+   តាមប៊ូតុង ➕) — Bot សួរលេខ → OTP → 2FA (បើមាន) → រក្សាទុក session។ សារ OTP/2FA ត្រូវ
+   **លុបភ្លាម** បន្ទាប់ពីអាន, ខុស ៣ ដង ឬអត់ឆ្លើយ ៥ នាទី (OTP) / ៣ នាទី (2FA) → login បញ្ចប់ខ្លួនឯង,
+   និង `/cancel` បោះបង់គ្រប់ពេល។ (ផ្លូវ CLI លុបចេញហើយ — មិនមាន OTP វាយក្នុង terminal ទេ)
 3. បើក `python main.py` — គណនីដែល `enabled` ភ្ជាប់ស្វ័យប្រវត្តិ; បន្ថែម/បិទគណនីថ្មី
-   តាម panel ឬ CLI ឃើញផលក្នុង ≤ ៦០ វិនាទី (hot-reload គ្មាន restart)
+   តាម panel ឃើញផលក្នុង ≤ ៦០ វិនាទី (hot-reload គ្មាន restart — coordinator ហៅ `reconcile()` ភ្លាម)
 4. បញ្ជាសង្គ្រោះបន្ទាន់ពី Telegram ផ្ទាល់ (send ទៅលេខគណនី userbot)៖
    `/pause <id>` · `/resume <id>` · `/pauseall` · `/resumeall` · `/stopbot` · `/startbot` · `/status`
 
 ច្បាប់ sticky គឺ hard-rule៖ អតិថិជនសរសេរមក A → តែ A តប។ បើគេសរសេរមក B → B មិនតប
 ទេ ហើយម្ចាស់ទទួលបានជូនដំណឹង (គ្មាន auto-switch/RR សម្រាប់ inbound — ការផ្ញើរាល់ចេញពី
-គណនីទៅមនុស្សមិនស្គាល់គឺជាផ្លូវ ban)។ តេស្ត៖ `python scripts/smoke_test_userbot.py` (១១៥ checks គ្មានបណ្តាញ)។
+គណនីទៅមនុស្សមិនស្គាល់គឺជាផ្លូវ ban)។ តេស្ត៖ `python scripts/smoke_test_userbot.py` (១៥៥ checks គ្មានបណ្តាញ)។
 
 ### ៦.២ ហាងលក់ពេញលេញលើ Userbot (inline catalog)
 
