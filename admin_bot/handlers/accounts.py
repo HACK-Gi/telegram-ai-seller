@@ -163,7 +163,7 @@ async def cb_view(callback: CallbackQuery, scope: Scope) -> None:
 
 async def _ask_phone(event: Message | CallbackQuery, state: FSMContext) -> None:
     await state.set_state(LoginStates.waiting_phone)
-    prompt = "📱 ផ្ញើ<b>លេខទូរស័ព្ទ</b>ដែលជាប់នឹងគណនី Telegram នេះ (ឧ. <code>+8551234567</code>)៖"
+    prompt = "📱 ផ្ញើ<b>លេខទូរស័ព្ទ</b>ដែលជាប់នឹងគណនី Telegram នេះ (ឧ. <code>093251670</code> ឬ <code>+85593251670</code>)៖"
     if isinstance(event, CallbackQuery):
         if event.message is None:
             await event.answer()

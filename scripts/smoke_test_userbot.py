@@ -232,6 +232,20 @@ async def test_session_crypto() -> None:
     check("log record ត្រូវ redact session", plain not in record.getMessage() and "[redacted]" in record.getMessage())
 
 
+async def test_phone_normalization() -> None:
+    print("\n[1b] normalize_phone — លេខដែលអ្នកប្រើវាយ → E.164")
+    from userbot.chat_login import normalize_phone
+
+    check("«093251670» → +85593251670", normalize_phone("093251670") == "+85593251670")
+    check("«093 251 670» (មានចន្លោះ) → +85593251670", normalize_phone("093 251 670") == "+85593251670")
+    check("«+85593251670» រួចហើយ → ដដែល", normalize_phone("+85593251670") == "+85593251670")
+    check("«85593251670» (គ្មាន +) → +85593251670", normalize_phone("85593251670") == "+85593251670")
+    check("«00955...» → +855...", normalize_phone("0085593251670") == "+85593251670")
+    check("លេខខ្លី «01234567» → បដិសេធ (None)", normalize_phone("01234567") is None)
+    check("អត្ថបទ «abc» → បដិសេធ (None)", normalize_phone("abc") is None)
+    check("ទទេ → បដិសេធ (None)", normalize_phone("   ") is None)
+
+
 async def test_sticky_rules() -> None:
     print("\n[2] Sticky binding — ច្បាប់ A→A គ្មានលើកលែង")
     cust = 800000111
@@ -975,6 +989,50 @@ async def test_qr_account_ladder() -> None:
         path.unlink(missing_ok=True)
 
 
+async def test_qr_never_cross_owner() -> None:
+    print("\n[16] QR មិនឆ្លងម្ចាស់ — ហាងគ្មាន QR → ជូនដំណឹងម្ចាស់ មិនមែនផ្ញើ QR ហាងផ្សេង")
+    alien_img = ROOT / "data" / "smoke_qr_alien.png"
+    alien_img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"alien" * 10)
+
+    shop_owner, alien_owner = 911001, 911002
+    async with db_session() as session:
+        token = session_store.encrypt(fake_session("+85511100017"))
+        lonely = await crud.create_account(session, phone="+85511100017", session_encrypted=token,
+                                           name="No QR shop", owner_admin_id=shop_owner)
+        category, _err = await crud.create_category(
+            session, code="xown", prefix="XOWN", name_kh="ឆ្លងម្ចាស់", icon="💳"
+        )
+        product = await crud.create_product(
+            session, name="Lonely Pass", price=3.0, category=category.name_kh,
+            category_id=category.id, owner_admin_id=shop_owner,
+        )
+        await crud.add_stock_lines(session, product.id, ["lon-1|a"])
+        # ហាងផ្សេងទៀតមាន QR ទូទៅ (default) — មិនត្រូវបាញ់ច្រឡំឡើយ
+        await crud.create_qrcode(
+            session, name="ALIEN QR", provider="aba", account_info="999999 ALIEN BANK",
+            image_path=str(alien_img), is_default=True, owner_admin_id=alien_owner,
+        )
+        lonely_id, product_id = lonely.id, product.id
+
+    harness = Harness(lonely_id, with_catalog=True)
+    cust = 860000200
+    await harness.seller.handle_inbound(cust, "សួស្តី")
+    alert = await harness.catalog.handle_buy(cust, product_id)
+    # រង់ចាំឱ្យត្រូវនឹងអ្វីដែល assert ពិត — notify ដើរតាម task ដាច់ដោយឡែក
+    await wait_until(lambda: any("គ្មាន QR" in n for n in harness.notes), 8.0)
+
+    check("QR របស់ហាងផ្សេង មិនត្រូវបានផ្ញើ", not any(path == str(alien_img) for _p, path, _c in harness.sender.photos))
+    check("អតិថិជនមិនឃើញលេខគណនីហាងផ្សេង", not any("ALIEN" in text for _peer, text in harness.sender.sent))
+    check("គ្មាន QR របស់ខ្លួន → ជូនដំណឹងម្ចាស់ភ្លាម", any("គ្មាន QR" in note for note in harness.notes))
+    async with db_session() as session:
+        left = await crud.available_stock(session, product_id)
+    check("Order នៅត្រូវបានបង្កើត ហើយស្តុកត្រូវកក់ (មិនបាត់)", alert == "" and left == 0)
+
+    await harness.outbox.stop()
+    await harness.seller.stop()
+    alien_img.unlink(missing_ok=True)
+
+
 async def test_manager_surface() -> None:
     print("\n[12] Manager — send gate + device pool")
     manager = AccountManager(notify=None)
@@ -997,6 +1055,7 @@ async def main() -> int:
     await init_db()
     print("🧪 userbot smoke — ជំហានទី ២.១ (គ្មានបណ្តាញ)")
     await test_session_crypto()
+    await test_phone_normalization()
     await test_sticky_rules()
     await test_windows()
     await test_budget()
@@ -1011,6 +1070,7 @@ async def main() -> int:
     await test_catalog_flow()
     await test_text_buy_qr()
     await test_qr_account_ladder()
+    await test_qr_never_cross_owner()
     print(f"\n{'✅ រំលង' if PASSED == TOTAL else '❌ មាន failure'} — {PASSED}/{TOTAL} checks ឆ្លងកាត់")
     if FAILURES:
         for name in FAILURES:

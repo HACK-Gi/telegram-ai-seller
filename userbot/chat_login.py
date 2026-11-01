@@ -24,6 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import phonenumbers
 from secrets import randbelow
 
 from sqlalchemy import select, update
@@ -38,7 +39,36 @@ from userbot.safety import describe_error
 
 log = logging.getLogger("userbot.chat_login")
 
-PHONE_RE = re.compile(r"^\+?\d{8,15}$")
+# លេខទូរស័ព្ទក្នុងស្រុក (ចាប់ផ្តើមដោយ 0) ត្រូវបំពេញកូដប្រទេសតាម region នេះ
+DEFAULT_REGION = "KH"
+
+
+def normalize_phone(raw: str, *, region: str = DEFAULT_REGION) -> str | None:
+    """បម្លែងលេខដែលអ្នកប្រើវាយ → E.164 (`+85593251670`)។ បរាជ័យ → `None`។
+
+    ទទួល «093251670», «093 251 670», «+85593251670», «85593251670», «00955...»។
+    លេខខ្លីពេក ឬមិនមែនលេខទូរស័ព្ទ → `None` (កុំបញ្ជូនទៅ Telethon ដើម្បីកុំឱ្យ error
+    ចេញជាភាសាអង់គ្លេសរញែញនៅចុងបញ្ចប់)។
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    cleaned = re.sub(r"[^\d+]", "", text)
+    if cleaned.startswith("00"):  # ទ្រង់ទ្រាយ international ចាស់ → + ដំបូង
+        cleaned = "+" + cleaned[2:]
+    if not cleaned:
+        return None
+    candidates = [cleaned]
+    if not cleaned.startswith("+"):
+        candidates.append("+" + cleaned)  # លេខដែលដាក់កូដប្រទេសរួច តែគ្មាន +
+    for candidate in candidates:
+        try:
+            parsed = phonenumbers.parse(candidate, None if candidate.startswith("+") else region)
+        except phonenumbers.NumberParseException:
+            continue
+        if phonenumbers.is_valid_number(parsed):
+            return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+    return None
 
 CODE_TIMEOUT = 300.0
 PASSWORD_TIMEOUT = 180.0
@@ -190,9 +220,13 @@ class LoginCoordinator:
             return f"🔐 {message}"
         if not settings.tg_api_id or not settings.tg_api_hash:
             return "🚫 មិនមាន TG_API_ID/TG_API_HASH ក្នុង .env — មិនអាច login បានទេ"
-        phone = phone.strip()
-        if not PHONE_RE.match(phone):
-            return "📵 លេខទូរស័ព្ទខុសទ្រង់ទ្រាយ — រំពឹង +855XXXXXXXX (ឧ. +8551234567)"
+        normalized = normalize_phone(phone)
+        if normalized is None:
+            return (
+                "📵 លេខទូរស័ព្ទខុសទ្រង់ទ្រាយ — វាយបានទាំង «093251670» និង «+85593251670»\n"
+                "សូមផ្ញើលេខដែលមាននៅក្នុង Telegram App របស់បង"
+            )
+        phone = normalized
         if len(self._pending) >= MAX_CONCURRENT:
             return "⏳ មានការ login កំពុងដំណើរ ២ ហើយ — សូមរង់ចាំមួយចប់ជាមុន"
         key = f"{chat_id}:{user_id}"

@@ -15,8 +15,8 @@ from config import settings
 from userbot import safety
 
 KEY_HELP = (
-    'SESSION_FERNET_KEY ទទេ ឬខុសទ្រង់ទ្រាយ — បង្កើតដោយ៖\n'
-    '  python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"'
+    "សូមកំណត់ SESSION_FERNET_KEY ក្នុង .env ជាមុន — បង្កើតដោយ៖\n"
+    "  python scripts/generate_keys.py --write"
 )
 
 
@@ -27,11 +27,17 @@ class SessionCryptoError(RuntimeError):
 def key_status() -> tuple[bool, str]:
     raw = (settings.fernet_key or "").strip()
     if not raw:
-        return False, "មិនទាន់កំណត់ SESSION_FERNET_KEY"
+        return False, (
+            "មិនទាន់កំណត់ SESSION_FERNET_KEY ក្នុង .env — "
+            "បង្កើតដោយ៖ python scripts/generate_keys.py --write រួច restart bot"
+        )
     try:
         Fernet(raw.encode())
     except (ValueError, TypeError):
-        return False, "SESSION_FERNET_KEY ខុសទ្រង់ទ្រាយ"
+        return False, (
+            "SESSION_FERNET_KEY ខុសទ្រង់ទ្រាយ (ត្រូវជា Fernet key 44 តួអក្សរ) — "
+            "បង្កើតថ្មីដោយ៖ python scripts/generate_keys.py --write --force"
+        )
     return True, "រួចរាល់"
 
 
