@@ -146,7 +146,10 @@ class Controls:
 
     def _status_text(self, scope: Scope) -> str:
         info = self.manager.status()
-        queues = info["queues"] if scope.is_owner else {k: v for k, v in queues.items() if k in set(scope.ids)}
+        queues = info["queues"]
+        if not scope.is_owner:
+            allowed = set(scope.ids)
+            queues = {account_id: depth for account_id, depth in queues.items() if account_id in allowed}
         seen = len(info["running_accounts"]) if scope.is_owner else len(queues)
         lines = [f"📊 {scope.label()} · គណនីភ្ជាប់៖ {seen} · global {'បិទ' if info['global_stopped'] else 'បើក'}"]
         for account_id, depth in sorted(queues.items()):
