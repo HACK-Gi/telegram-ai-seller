@@ -646,6 +646,18 @@ async def main() -> int:
     expect("គ្មាន pending ក្រោយ /cancel", not chat_login.get_coordinator().has_pending(STAFF, STAFF))
     expect("client ត្រូវ disconnect (/cancel)", factory.last.disconnected)
     expect("/cancel → គ្មាន Account row", await fetch_account("+85512777002") is None)
+
+    # OTP timeout — អតិថិជនមិនវាយកូដ → coordinator បញ្ចប់ខ្លួនឯង (កុំឱ្យ pending ជាប់)
+    factory = use_coordinator()
+    saved_timeout = chat_login.CODE_TIMEOUT
+    chat_login.CODE_TIMEOUT = 0.2
+    mark = panel.mark()
+    await panel.msg("/addaccount +85512777003", user_id=STAFF, expect_reply=False)
+    expect("អត់ឆ្លើយក្នុង CODE_TIMEOUT → បញ្ចប់", await wait_for_text_since(panel, mark, "មិនឃើញកូដ OTP"))
+    chat_login.CODE_TIMEOUT = saved_timeout
+    expect("គ្មាន pending ក្រោយ timeout", not chat_login.get_coordinator().has_pending(STAFF, STAFF))
+    expect("timeout → គ្មាន orphan row", await fetch_account("+85512777003") is None)
+    expect("timeout → client ត្រូវ disconnect", factory.last.disconnected)
     await chat_login.get_coordinator().shutdown()
 
     print("— កិច្ចស្វ័យប្រវត្តិ + ទិន្នន័យ —")
