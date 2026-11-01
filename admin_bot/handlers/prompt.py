@@ -10,7 +10,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from admin_bot import keyboards, render
-from admin_bot.owner_gate import OwnerGate
+from admin_bot.owner_gate import OwnerOnly
 from ai_engine import AIAllFailed, AIError, get_engine
 from ai_engine.chain import SAFE_REPLY
 from ai_engine.prompting import compose_system_prompt, format_catalog
@@ -19,8 +19,6 @@ from helpers import esc
 
 log = logging.getLogger("admin.prompt")
 router = Router()
-router.message.outer_middleware(OwnerGate())
-router.callback_query.outer_middleware(OwnerGate())
 
 TEST_CASES = (
     "សួស្តីបង",
@@ -53,7 +51,7 @@ async def current_composed(session) -> str:
     return compose_system_prompt(base, few_shot, format_catalog(products))
 
 
-@router.callback_query(F.data == "menu:prompt")
+@router.callback_query(F.data == "menu:prompt", OwnerOnly())
 async def cb_prompt_root(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(None)
     if callback.message is None:
@@ -73,7 +71,7 @@ async def cb_prompt_root(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "prompt:show")
+@router.callback_query(F.data == "prompt:show", OwnerOnly())
 async def cb_show(callback: CallbackQuery) -> None:
     if callback.message is None:
         await callback.answer()
@@ -84,7 +82,7 @@ async def cb_show(callback: CallbackQuery) -> None:
     await render.send_long(callback.message, f"🧠 <b>Prompt ដែល AI ទទួលបានឥឡូវ</b>\n\n{composed}")
 
 
-@router.callback_query(F.data == "prompt:edit")
+@router.callback_query(F.data == "prompt:edit", OwnerOnly())
 async def cb_edit(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(EditPrompt.system)
     if callback.message is None:
@@ -97,7 +95,7 @@ async def cb_edit(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(EditPrompt.system, F.text)
+@router.message(EditPrompt.system, F.text, OwnerOnly())
 async def md_edit_system(message: Message, state: FSMContext) -> None:
     raw = message.text.strip()
     value = crud.DEFAULTS["system_prompt"] if raw.lower() == "default" else raw
@@ -110,7 +108,7 @@ async def md_edit_system(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(F.data == "prompt:fs")
+@router.callback_query(F.data == "prompt:fs", OwnerOnly())
 async def cb_fs(callback: CallbackQuery) -> None:
     async with db_session() as session:
         few_shot = await crud.get_setting(session, "few_shot")
@@ -124,7 +122,7 @@ async def cb_fs(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "prompt:fs:default")
+@router.callback_query(F.data == "prompt:fs:default", OwnerOnly())
 async def cb_fs_default(callback: CallbackQuery) -> None:
     async with db_session() as session:
         await crud.set_setting(session, "few_shot", crud.DEFAULT_FEW_SHOT)
@@ -139,7 +137,7 @@ async def cb_fs_default(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "prompt:fs:show")
+@router.callback_query(F.data == "prompt:fs:show", OwnerOnly())
 async def cb_fs_show(callback: CallbackQuery) -> None:
     if callback.message is None:
         await callback.answer()
@@ -153,7 +151,7 @@ async def cb_fs_show(callback: CallbackQuery) -> None:
     )
 
 
-@router.callback_query(F.data == "prompt:fs:edit")
+@router.callback_query(F.data == "prompt:fs:edit", OwnerOnly())
 async def cb_fs_edit(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(EditPrompt.few_shot)
     if callback.message is None:
@@ -167,7 +165,7 @@ async def cb_fs_edit(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(EditPrompt.few_shot, F.text)
+@router.message(EditPrompt.few_shot, F.text, OwnerOnly())
 async def md_edit_few_shot(message: Message, state: FSMContext) -> None:
     raw = message.text.strip()
     async with db_session() as session:
@@ -183,7 +181,7 @@ async def md_edit_few_shot(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(F.data == "prompt:fs:askclear")
+@router.callback_query(F.data == "prompt:fs:askclear", OwnerOnly())
 async def cb_fs_ask_clear(callback: CallbackQuery) -> None:
     if callback.message is None:
         await callback.answer()
@@ -194,7 +192,7 @@ async def cb_fs_ask_clear(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "prompt:fs:clear")
+@router.callback_query(F.data == "prompt:fs:clear", OwnerOnly())
 async def cb_fs_clear(callback: CallbackQuery) -> None:
     async with db_session() as session:
         await crud.set_setting(session, "few_shot", "")
@@ -202,7 +200,7 @@ async def cb_fs_clear(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "prompt:test")
+@router.callback_query(F.data == "prompt:test", OwnerOnly())
 async def cb_test(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(None)
     if callback.message is None:
@@ -217,7 +215,7 @@ async def cb_test(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("ptest:"))
+@router.callback_query(F.data.startswith("ptest:"), OwnerOnly())
 async def cb_ptest(callback: CallbackQuery, state: FSMContext) -> None:
     if callback.message is None:
         await callback.answer()
@@ -270,7 +268,7 @@ async def run_test(message: Message, question: str) -> None:
     )
 
 
-@router.message(TestPrompt.question, F.text)
+@router.message(TestPrompt.question, F.text, OwnerOnly())
 async def md_test(message: Message, state: FSMContext) -> None:
     await state.set_state(None)
     await run_test(message, message.text.strip())

@@ -11,7 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from admin_bot import keyboards
-from admin_bot.owner_gate import OwnerGate
+from admin_bot.owner_gate import OwnerOnly
 from ai_engine import get_engine
 from config import BACKUP_DIR, settings
 from database import crud, db_session
@@ -20,8 +20,6 @@ from services import backup as backup_service
 
 log = logging.getLogger("admin.settings")
 router = Router()
-router.message.outer_middleware(OwnerGate())
-router.callback_query.outer_middleware(OwnerGate())
 
 OWNER_ONLY = "🔐 គត់ Owner ប៉ុណ្ណោះដែលអាចប្តូរផ្នែកនេះ"
 
@@ -76,13 +74,13 @@ async def overview(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "menu:settings")
+@router.callback_query(F.data == "menu:settings", OwnerOnly())
 async def cb_settings_root(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(None)
     await overview(callback)
 
 
-@router.callback_query(F.data == "set:hours")
+@router.callback_query(F.data == "set:hours", OwnerOnly())
 async def cb_hours(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -95,7 +93,7 @@ async def cb_hours(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(EditSetting.hours, F.text)
+@router.message(EditSetting.hours, F.text, OwnerOnly())
 async def md_hours(message: Message, state: FSMContext) -> None:
     raw = message.text.strip()
     if raw.lower() not in ("24h", "24") and parse_hours(raw) is None:
@@ -108,7 +106,7 @@ async def md_hours(message: Message, state: FSMContext) -> None:
     await message.answer(f"✅ ម៉ោងធ្វើការ: <code>{value}</code>", reply_markup=keyboards.settings_menu(True))
 
 
-@router.callback_query(F.data == "set:offreply")
+@router.callback_query(F.data == "set:offreply", OwnerOnly())
 async def cb_off_reply(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -121,7 +119,7 @@ async def cb_off_reply(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(EditSetting.off_reply, F.text)
+@router.message(EditSetting.off_reply, F.text, OwnerOnly())
 async def md_off_reply(message: Message, state: FSMContext) -> None:
     async with db_session() as session:
         await crud.set_setting(session, "off_hours_reply", message.text.strip())
@@ -129,7 +127,7 @@ async def md_off_reply(message: Message, state: FSMContext) -> None:
     await message.answer("✅ បានរក្សាទុកសារក្រៅម៉ោង", reply_markup=keyboards.settings_menu(True))
 
 
-@router.callback_query(F.data == "set:ai")
+@router.callback_query(F.data == "set:ai", OwnerOnly())
 async def cb_toggle_ai(callback: CallbackQuery) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -142,7 +140,7 @@ async def cb_toggle_ai(callback: CallbackQuery) -> None:
     await callback.answer(f"🤖 AI global → {new}")
 
 
-@router.callback_query(F.data == "set:userbot")
+@router.callback_query(F.data == "set:userbot", OwnerOnly())
 async def cb_toggle_userbot(callback: CallbackQuery) -> None:
     """flag តែមួយដែល Userbot (ជំហានទី ២) នឹងអាន = ដូច /stopbot និង /startbot។"""
     if not is_owner(callback):
@@ -156,7 +154,7 @@ async def cb_toggle_userbot(callback: CallbackQuery) -> None:
     await callback.answer(f"📱 Userbot → {new}")
 
 
-@router.callback_query(F.data == "set:threshold")
+@router.callback_query(F.data == "set:threshold", OwnerOnly())
 async def cb_threshold(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -169,7 +167,7 @@ async def cb_threshold(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(EditSetting.threshold, F.text)
+@router.message(EditSetting.threshold, F.text, OwnerOnly())
 async def md_threshold(message: Message, state: FSMContext) -> None:
     try:
         value = max(0, int(float(message.text.strip())))
@@ -186,7 +184,7 @@ async def md_threshold(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(F.data == "set:lang")
+@router.callback_query(F.data == "set:lang", OwnerOnly())
 async def cb_lang(callback: CallbackQuery) -> None:
     if callback.message is None:
         await callback.answer()
@@ -200,7 +198,7 @@ async def cb_lang(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("set:lang:"))
+@router.callback_query(F.data.startswith("set:lang:"), OwnerOnly())
 async def cb_lang_pick(callback: CallbackQuery) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -214,7 +212,7 @@ async def cb_lang_pick(callback: CallbackQuery) -> None:
 
 # ---------------- Backup / Restore ----------------
 
-@router.callback_query(F.data == "set:backup")
+@router.callback_query(F.data == "set:backup", OwnerOnly())
 async def cb_backup(callback: CallbackQuery) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -237,7 +235,7 @@ async def cb_backup(callback: CallbackQuery) -> None:
             await callback.message.answer(f"⚠️ បានបង្កើត <code>{esc(path.name)}</code> ប៉ុន្តែផ្ញើទៅ Telegram មិនបាន")
 
 
-@router.callback_query(F.data == "set:restore")
+@router.callback_query(F.data == "set:restore", OwnerOnly())
 async def cb_restore(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -256,7 +254,7 @@ async def cb_restore(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(RestoreDb.document, F.document)
+@router.message(RestoreDb.document, F.document, OwnerOnly())
 async def md_restore_document(message: Message, state: FSMContext) -> None:
     pending = BACKUP_DIR / "pending_restore.db"
     await message.bot.download(message.document.file_id, destination=pending)
@@ -275,7 +273,7 @@ async def md_restore_document(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(F.data == "set:restore:apply")
+@router.callback_query(F.data == "set:restore:apply", OwnerOnly())
 async def cb_restore_apply(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -308,7 +306,7 @@ async def cb_restore_apply(callback: CallbackQuery, state: FSMContext) -> None:
 
 # ---------------- Admins ----------------
 
-@router.callback_query(F.data == "menu:admins")
+@router.callback_query(F.data == "menu:admins", OwnerOnly())
 async def cb_admins_root(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(None)
     if not is_owner(callback):
@@ -327,7 +325,7 @@ async def cb_admins_root(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:add")
+@router.callback_query(F.data == "adm:add", OwnerOnly())
 async def cb_admin_add(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -340,7 +338,7 @@ async def cb_admin_add(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(AddAdmin.details, F.text)
+@router.message(AddAdmin.details, F.text, OwnerOnly())
 async def md_admin_add(message: Message, state: FSMContext) -> None:
     parts = message.text.split(maxsplit=1)
     try:
@@ -364,7 +362,7 @@ async def md_admin_add(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(F.data == "adm:remove")
+@router.callback_query(F.data == "adm:remove", OwnerOnly())
 async def cb_admin_remove(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -377,7 +375,7 @@ async def cb_admin_remove(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.message(RemoveAdmin.target, F.text)
+@router.message(RemoveAdmin.target, F.text, OwnerOnly())
 async def md_admin_remove(message: Message, state: FSMContext) -> None:
     try:
         telegram_id = int(message.text.split()[0])
@@ -395,7 +393,7 @@ async def md_admin_remove(message: Message, state: FSMContext) -> None:
     await message.answer(f"✅ បានលុប <code>{telegram_id}</code>", reply_markup=keyboards.admins_menu(admins))
 
 
-@router.message(Command("addadmin"))
+@router.message(Command("addadmin"), OwnerOnly())
 async def cmd_add_admin(message: Message, command: CommandObject) -> None:
     if not is_owner(message):
         await message.answer(OWNER_ONLY)
@@ -414,7 +412,7 @@ async def cmd_add_admin(message: Message, command: CommandObject) -> None:
     await message.answer(f"{'✅ បានបន័ែម' if added else '⚠️ មានស្រាប់'} <code>{telegram_id}</code>")
 
 
-@router.message(Command("deladmin"))
+@router.message(Command("deladmin"), OwnerOnly())
 async def cmd_del_admin(message: Message, command: CommandObject) -> None:
     if not is_owner(message):
         await message.answer(OWNER_ONLY)
