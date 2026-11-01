@@ -800,7 +800,9 @@ async def best_qrcode(
         qr = await session.scalar(scoped(select(QRCode).where(QRCode.product_id == product_id, *unbound)).order_by(QRCode.id.desc()).limit(1))
         if qr is not None:
             return qr
-    qr = await session.scalar(scoped(select(QRCode).where(QRCode.is_default.is_(True), *unbound)).limit(1))
+    # តម្រៀប id ថ្មីបំផុតជានិច្ច — បើមាន default ច្រើនសន្លឹក (ទិន្នន័យចាស់) SQLite ត្រឡប់តាម
+    # rowid គ្មានលំដាប់ → QR សម្រាប់បង់ប្រាក់អាចប្តូរទៅវិញទៅមករវាងការទិញនីមួយៗ
+    qr = await session.scalar(scoped(select(QRCode).where(QRCode.is_default.is_(True), *unbound)).order_by(QRCode.id.desc()).limit(1))
     if qr is not None:
         return qr
     return await session.scalar(scoped(select(QRCode).where(*unbound)).order_by(QRCode.id.desc()).limit(1))

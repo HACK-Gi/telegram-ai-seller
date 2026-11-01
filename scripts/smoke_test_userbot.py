@@ -996,6 +996,9 @@ async def test_qr_never_cross_owner() -> None:
 
     shop_owner, alien_owner = 911001, 911002
     async with db_session() as session:
+        # សម្អាត QR ពីជំហានមុនៗ — បើនៅមាន default ណាមួយ ជណ្តើរនឹងយកវាជំនួស ALIEN
+        # ធ្វើឱ្យការត្រួតពិនិត្យនេះឆ្លងដោយស្ងាត់ ទោះកំហុសឆ្លងម្ចាស់ត្រឡប់មកវិញក៏ដោយ
+        await session.execute(delete(QRCode))
         token = session_store.encrypt(fake_session("+85511100017"))
         lonely = await crud.create_account(session, phone="+85511100017", session_encrypted=token,
                                            name="No QR shop", owner_admin_id=shop_owner)
@@ -1014,15 +1017,20 @@ async def test_qr_never_cross_owner() -> None:
         )
         lonely_id, product_id = lonely.id, product.id
 
-    harness = Harness(lonely_id, with_catalog=True)
+    # start=False — អ្វីដែល assert គឺ «អ្វីដែលដាក់ចូល outbox» មិនមែនអ្វីដែលផ្ញើរួច
+    # ដូច្រេះ ការត្រួតពិនិត្យមិនអាស្រ័យលើ budget/enabled ហើយបរាជ័យពិតប្រាកដ បើ QR ឆ្លងម្ចាស់
+    harness = Harness(lonely_id, with_catalog=True, start=False)
     cust = 860000200
     await harness.seller.handle_inbound(cust, "សួស្តី")
     alert = await harness.catalog.handle_buy(cust, product_id)
-    # រង់ចាំឱ្យត្រូវនឹងអ្វីដែល assert ពិត — notify ដើរតាម task ដាច់ដោយឡែក
-    await wait_until(lambda: any("គ្មាន QR" in n for n in harness.notes), 8.0)
 
-    check("QR របស់ហាងផ្សេង មិនត្រូវបានផ្ញើ", not any(path == str(alien_img) for _p, path, _c in harness.sender.photos))
-    check("អតិថិជនមិនឃើញលេខគណនីហាងផ្សេង", not any("ALIEN" in text for _peer, text in harness.sender.sent))
+    queued = list(harness.outbox._items)
+    check("QR របស់ហាងផ្សេង មិនត្រូវដាក់ចូល outbox (រូបភាព)",
+          not any(item.file_path == str(alien_img) for item in queued))
+    check("QR របស់ហាងផ្សេង មិនត្រូវដាក់ចូល outbox (caption មានលេខគណនីហាងផ្សេង)",
+          not any("ALIEN" in item.text for item in queued))
+    check("caption មិនសន្យា «QR នេះ» ពេលគ្មាន QR របស់ខ្លួន",
+          all("QR នេះ" not in item.text for item in queued))
     check("គ្មាន QR របស់ខ្លួន → ជូនដំណឹងម្ចាស់ភ្លាម", any("គ្មាន QR" in note for note in harness.notes))
     async with db_session() as session:
         left = await crud.available_stock(session, product_id)

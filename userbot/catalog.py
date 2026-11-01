@@ -280,7 +280,16 @@ class Catalog:
             if not reserved:
                 await crud.cancel_order(session, order.id)
                 return "🔴 ស្តុកអស់បណ្តោះអាសន្ន — សូមសរសេរប្រាប់ខ្ញុំ ឬមើលផលិតផលផ្សេងបង 🙏"
-            qr = await crud.best_qrcode(session, product.id, account_id=self.account_id)
+            # D3 លើផ្លូវលុយពិត៖ fallback «QR ទូទៅ» ត្រូវស្ថិតក្នុងម្ចាស់គណនីដែលលក់
+            # ប៉ុណ្ណោះ បើមិនដូច្នេះ បើគ្មាន QR របស់ខ្លួនទេ អតិថិជននឹងទទួលបាន QR ធនាគារ
+            # របស់ហាងផ្សេង (ប្រាក់ចូលកន្លែងខុស) ជាជាង «គ្មាន QR → ជូនដំណឹងម្ចាស់»
+            account = await crud.get_account(session, self.account_id)
+            qr = await crud.best_qrcode(
+                session,
+                product.id,
+                owner_admin_id=account.owner_admin_id if account is not None else None,
+                account_id=self.account_id,
+            )
             no_qr = qr is None
             if no_qr:
                 # វិធាន «គ្មាន QR → ជូនដំណឹងម្ចាស់ភ្លាម» — dedupe រក្សាទុកក្នុង DB រស់កាត់ restart
