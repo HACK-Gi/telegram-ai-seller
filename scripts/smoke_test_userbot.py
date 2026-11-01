@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,12 +47,12 @@ ai_engine._engine = MockEngine(latency=0)  # តេស្តមិនរង់�
 
 from config import settings  # noqa: E402
 from database import crud, db_session, init_db  # noqa: E402
-from database.models import Account, AccountStatus, Order, OrderStatus  # noqa: E402
+from database.models import Account, AccountStatus, Order, OrderStatus, QRCode  # noqa: E402
 from helpers import utcnow  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+from sqlalchemy import delete, select  # noqa: E402
 
 from userbot import limits, safety, session_store  # noqa: E402
-from userbot.catalog import VOICE_REJECT, Catalog  # noqa: E402
+from userbot.catalog import VOICE_REJECT, Catalog, _newest_mention, purchase_intent  # noqa: E402
 from userbot.coalescer import ConvKey, Coalescer  # noqa: E402
 from userbot.controls import Controls  # noqa: E402
 from userbot.manager import DEVICE_POOL, AccountManager, ManagerError  # noqa: E402
@@ -102,6 +102,7 @@ class MockSender:
     def __init__(self, fail_first: Exception | None = None) -> None:
         self.sent: list[tuple[int, str]] = []
         self.buttoned: list[tuple[int, str, object]] = []
+        self.photos: list[tuple[int, str, str]] = []
         self.typing_calls: list[float] = []
         self._fail_first = fail_first
 
@@ -120,6 +121,7 @@ class MockSender:
         return _Msg()
 
     async def send_photo(self, peer: PeerRef, path: str, caption: str):
+        self.photos.append((peer.peer_id, path, caption))
         self.sent.append((peer.peer_id, f"[photo] {caption}"))
         return None
 
@@ -788,6 +790,107 @@ async def test_catalog_flow() -> None:
     await harness.seller.stop()
 
 
+async def test_text_buy_qr() -> None:
+    print("\n[14] ទិញវាយតាមអក្សរ → QR ដែលម្ចាស់ Upload + cooldown ១០ នាទី")
+    qr_image = ROOT / "data" / "smoke_qr.png"
+    qr_image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"qr" * 24)
+
+    account = await make_account("+85511100014")
+    async with db_session() as session:
+        category, err = await crud.create_category(
+            session, code="qrp", prefix="QRP", name_kh="ទូទាត់សាកល្បង", icon="💳"
+        )
+        product = await crud.create_product(
+            session, name="Quick Pass Test", price=6.0, category=category.name_kh, category_id=category.id
+        )
+        other = await crud.create_product(
+            session, name="PUBGM Test", price=9.0, category=category.name_kh, category_id=category.id
+        )
+        await crud.add_stock_lines(session, product.id, ["qp-1|a", "qp-2|b", "qp-3|c"])
+        await crud.add_stock_lines(session, other.id, ["pubg-1|a"])
+        await crud.create_qrcode(
+            session, name="ABA smoke", provider="aba", account_info="012345678 ABA",
+            image_path=str(qr_image), is_default=True,
+        )
+        pid, other_id = product.id, other.id
+    check("create_category សម្រាប់ផ្លូវ QR", err == "")
+
+    # ---------- ១. ចេតនា + ការរកផលិតផល (មុខងារសុទ្ធ គ្មាន DB) ----------
+    check(
+        "ចេតនាទិញ/សុំ QR ចាប់បាន",
+        all(purchase_intent(t) for t in ("បាទ យកមួយ", "ខ្ញុំចង់ទិញ", "qr បង", "ចង់បាញ់លុយ", "send me the qr")),
+    )
+    check(
+        "គ្មានចេតនា → រាំង (តម្លៃ/សួរទូទៅ/បដិសេធ)",
+        not any(purchase_intent(t) for t in ("តម្លៃប៉ុន្មាន?", "សួស្តីបង", "មិនទិញទេបង", "sok sabay", "")),
+    )
+    check("«pay» ក្នុង «payment» មិនត្រូវចាប់ខុសពាក្យ", purchase_intent("payment តាម qr"))
+    items = [type("P", (), {"id": 1, "name": "VIP Account", "name_en": "", "product_code": "GAME-001"})(),
+             type("P", (), {"id": 2, "name": "Quick Pass", "name_en": "", "product_code": "FF-001"})()]
+    check("រកឃើញតាមឈ្មោះ", _newest_mention(items, "ខ្ញុំយក Quick Pass ១") == 2)
+    check("រកឃើញតាម product_code", _newest_mention(items, "GAME-001 សល់ទេ") == 1)
+    check("គ្មានការណែនាំ → None", _newest_mention(items, "មានអីចំណេញទេ?") is None)
+
+    # ---------- ២. អន្តរាគមន៍ — Outbox ផ្ញើរូបភាពពិត ----------
+    harness = Harness(account.id, with_catalog=True)
+    cust = 860000001
+    status = await harness.seller.handle_inbound(cust, "សួស្តី")
+    check("ទំនាក់ទំនងដំបូង → bound", status == "bound")
+
+    got = await harness.seller.handle_inbound(cust, "ខ្ញុំចង់ទិញ Quick Pass Test ១ មុខ")
+    out = await wait_until(lambda: len(harness.sender.photos) == 1, 8.0)
+    check("អតិថិជនវាយម្តង → AI តប + រូបភាព QR ចេញ", got == "queued" and out)
+    check("ចម្លើយ AI ចេញមុន ឬក្រោយ QR ក៏បាន (២ សារ)", len(harness.sender.sent) >= 2)
+    check("រូបភាពដែលផ្ញើ = ឯកសារ Upload របស់ម្ចាស់ (មិន Generate)", harness.sender.photos
+          and harness.sender.photos[-1][1] == str(qr_image))
+    check("caption បញ្ជាទិញចេញតាម Outbox", "បញ្ជាទិញ" in harness.sender.photos[-1][2])
+    async with db_session() as session:
+        pending = await crud.open_order_for_customer(session, cust, pid, account_id=account.id)
+        check("order pending ត្រូវបង្កើត + crud រកឃើញ", pending is not None)
+        check("ស្តុកកក់ ១ ពី ៣", await crud.available_stock(session, pid) == 2)
+
+    # ---------- ៣. cooldown ១០ នាទី (DB មិនមែន cache) ----------
+    again = await harness.seller._maybe_send_qr(cust, 777, ("យកមួយទៀត Quick Pass Test",), "")
+    check("ក្នុង ១០ នាទី → qr_cooldown", again == "qr_cooldown")
+    check("cooldown មិនបាញ់រូបភាពថ្មី", len(harness.sender.photos) == 1)
+    async with db_session() as session:
+        await crud.update_order(session, pending.id, created_at=utcnow() - timedelta(minutes=11))
+    after = await harness.seller._maybe_send_qr(cust, 777, ("យកមួយទៀត Quick Pass Test",), "")
+    resent = await wait_until(lambda: len(harness.sender.photos) == 2, 8.0)
+    check("កាត់ ១០ នាទី → ផ្ញើ QR ម្តងទៀតបាន", after == "qr_sent" and resent)
+    async with db_session() as session:
+        rows = list((await session.scalars(select(Order).where(Order.customer_id == cust))).all())
+        check("order ២ pending ក្រោយ cooldown ផុតកំណត់", len([r for r in rows if r.status == OrderStatus.PENDING_PAYMENT]) == 2)
+
+    # ---------- ៤. ករណីមិនផ្ញើ ----------
+    check("គ្មានចេតនា → no_intent", await harness.seller._maybe_send_qr(cust, 777, ("តម្លៃប៉ុន្មាន?",), "") == "no_intent")
+    check(
+        "ចេតនា ប៉ុន្តែមិនបញ្ជាក់ឈ្មោះ + ហាងច្រើនមុខ → ambiguous",
+        await harness.seller._maybe_send_qr(cust, 777, ("ខ្ញុំចង់ទិញមួយមុខ",), "") == "ambiguous",
+    )
+    check("ឈ្មោះនៅក្នុងចម្លើយ AI ក៏រកឃើញ",
+          await harness.seller._maybe_send_qr(cust, 777, ("យកមួយ",), "Quick Pass Test តម្លៃ $6 បង") == "qr_cooldown")
+    bare = Harness(account.id, start=False)
+    check("គ្មាន catalog → no_catalog", await bare.seller._maybe_send_qr(cust, 777, ("យកមួយ Quick Pass Test",), "") == "no_catalog")
+
+    # ---------- ៥. គ្មាន QR → ជូនដំណឹងម្ចាស់ភ្លាម ----------
+    async with db_session() as session:
+        await session.execute(delete(QRCode))
+    notes_before = len(harness.notes)
+    photos_before = len(harness.sender.photos)
+    noqr = await harness.seller._maybe_send_qr(cust, 777, ("ចង់ទិញ PUBGM Test",), "")
+    captioned = await wait_until(lambda: any("PUBGM Test" in t for _, t in harness.sender.sent), 8.0)
+    check("គ្មាន QR → នៅដំណើរការ order (មិនប្រកាសកំហុស)", noqr == "qr_sent" and captioned)
+    check("គ្មាន QR → ជូនដំណឹងម្ចាស់ភ្លាម", any("គ្មាន QR" in n for n in harness.notes[notes_before:]))
+    check("គ្មាន QR → មិនមែនរូបភាព", len(harness.sender.photos) == photos_before)
+    text_only = [t for _, t in harness.sender.sent if "PUBGM Test" in t]
+    check("គ្មាន QR → caption មិនសន្យា «QR នេះ»", "រៀបចំព័ត៌មានបង់ប្រាក់" in text_only[0] and "QR នេះ" not in text_only[0])
+
+    await harness.outbox.stop()
+    await harness.seller.stop()
+    qr_image.unlink(missing_ok=True)
+
+
 async def test_manager_surface() -> None:
     print("\n[12] Manager — send gate + device pool")
     manager = AccountManager(notify=None)
@@ -822,6 +925,7 @@ async def main() -> int:
     await test_controls()
     await test_manager_surface()
     await test_catalog_flow()
+    await test_text_buy_qr()
     print(f"\n{'✅ រំលង' if PASSED == TOTAL else '❌ មាន failure'} — {PASSED}/{TOTAL} checks ឆ្លងកាត់")
     if FAILURES:
         for name in FAILURES:

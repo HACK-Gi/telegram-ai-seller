@@ -156,6 +156,14 @@ async def main() -> None:
           "កុំប្រើពាក្យ" in crud.DEFAULT_SYSTEM_PROMPT and "ប៊ូតុង" in crud.DEFAULT_SYSTEM_PROMPT)
     check("TEST_CASES 5 + custom", len(TEST_CASES) == 5 and TEST_CASES[2] == Q)
 
+    # ខ្សែ «ច្បាប់សំខាន់» ដែល compose បន្ថែមខាងចុង មិនត្រូវបង្រៀនឱ្យនិយាយរឿងប៊ូតុងទេ
+    from ai_engine.prompting import compose_system_prompt
+
+    closing = compose_system_prompt("A", "B", "C").split("ច្បាប់សំខាន់៖", 1)[-1]
+    leaked = [word for word in button_words if word in closing.lower()]
+    check(f"compose tail គ្មានពាក្យប៊ូតុង {leaked}", not leaked)
+    check("compose tail និយាយថា ប្រព័ន្ធ ជាអ្នកផ្ញើ QR", "កុំអះអាងថាអ្នកបានផ្ញើរូបភាព" in closing)
+
     print(f"\n✅ smoke_test_ai: {PASS}/{PASS + FAIL}")
     if FAIL:
         sys.exit(1)
