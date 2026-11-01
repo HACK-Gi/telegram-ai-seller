@@ -169,17 +169,25 @@ def _backfill_products(conn: Connection) -> int:
 
 
 def _refresh_default_prompts(conn: Connection) -> int:
-    """ជំនួសតែ prompt ដែលជាលំនាំដើមចាស់ *ដូចគ្នាពិត* — កំណត់ហេតុរបស់ម្ចាស់មិនត្រូវប៉ះទេ។"""
+    """ជំនួសតែ prompt ដែលជាលំនាំដើមចាស់ *ដូចគ្នាពិត* — កំណត់ហេតុរបស់ម្ចាស់មិនត្រូវប៉ះទេ។
+
+    រាល់ពេលកែ `DEFAULT_SYSTEM_PROMPT`/`DEFAULT_FEW_SHOT` ត្រូវដាក់អត្ថបទចាស់ជា
+    `LEGACY_..._V<n>` រួចបន្ថែមជួរនៅទីនេះ ទើប DB ដែលបាន seed ពីមុនតាមทัน។
+    """
     from database.crud import (
         DEFAULT_FEW_SHOT,
         DEFAULT_SYSTEM_PROMPT,
         LEGACY_DEFAULT_FEW_SHOT,
+        LEGACY_DEFAULT_FEW_SHOT_V2,
         LEGACY_DEFAULT_SYSTEM_PROMPT,
+        LEGACY_DEFAULT_SYSTEM_PROMPT_V2,
     )
 
     pairs = (
         ("system_prompt", LEGACY_DEFAULT_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT),
+        ("system_prompt", LEGACY_DEFAULT_SYSTEM_PROMPT_V2, DEFAULT_SYSTEM_PROMPT),
         ("few_shot", LEGACY_DEFAULT_FEW_SHOT, DEFAULT_FEW_SHOT),
+        ("few_shot", LEGACY_DEFAULT_FEW_SHOT_V2, DEFAULT_FEW_SHOT),
     )
     replaced = 0
     for key, legacy, new in pairs:
