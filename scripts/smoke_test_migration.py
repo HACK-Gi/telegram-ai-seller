@@ -70,7 +70,8 @@ async def main() -> int:
 
     print("\n[1] Migration v4 — idempotent + seed + backfill + prompt refresh")
     notes = await migrations.migrate()
-    check("schema version = 4", (await migrations.schema_version()) == 4)
+    check(f"schema version = {migrations.SCHEMA_VERSION}",
+          (await migrations.schema_version()) == migrations.SCHEMA_VERSION)
     async with dbsession.SessionFactory() as s:
         seeded_now = await crud.list_all_categories(s)
     check("categories មាន ៨ (seed ឬស្រាប់ពី DB ពិត)", len(seeded_now) == 8)
@@ -80,7 +81,8 @@ async def main() -> int:
         fs = await crud.get_setting(s, "few_shot")
         check("system_prompt → លំនាំដើមថ្មី", sp == crud.DEFAULT_SYSTEM_PROMPT)
         check("few_shot → លំនាំដើមថ្មី", fs == crud.DEFAULT_FEW_SHOT)
-        check("prompt ថ្មីមាន «menu» + voice rule", "«menu»" in sp and "Voice" in sp)
+        check("prompt ថ្មីហាមពាក្យប៊ូតុង ប៉ុន្តែនៅរក្សា voice rule",
+              "កុំប្រើពាក្យ" in sp and "ប៊ូតុង" in sp and "Voice" in sp and "ចុច «🛒" not in sp)
     # owner custom មិនត្រូវប៉ះ
     async with dbsession.SessionFactory() as s:
         row = await s.get(crud.Setting, "system_prompt")

@@ -142,6 +142,18 @@ async def main() -> None:
     check("DEFAULTS ត្រង់ few_shot", crud.DEFAULTS["few_shot"] == crud.DEFAULT_FEW_SHOT)
     check("persona មានច្បាប់សំខាន់៖", "កុំចម្លងសារអតិថិជន" in crud.DEFAULT_SYSTEM_PROMPT)
     check("persona ហាមស្លាក [ASSISTANT]", "[ASSISTANT]" in crud.DEFAULT_SYSTEM_PROMPT)
+
+    # Userbot លក់ដោយសន្ទនាសុទ្ធ — persona/few-shot មិនត្រូវបង្រៀនឱ្យនិយាយរឿងប៊ូតុង
+    button_words = ("ចុច", "ប៊ូតុង", "ប៊ូតុន", "click", "មេនុ", "menu", "ទិញឥឡូវ")
+    few_shot = crud.DEFAULT_FEW_SHOT.lower()
+    check(f"few-shot គ្មានពាក្យប៊ូតុង {[w for w in button_words if w in few_shot]}",
+          not any(word in few_shot for word in button_words))
+    # អនុញ្ញាតឱ្យមានពាក្យទាំងនេះតែក្នុងខ្សែហាម (ក្រោយ «ច្បាប់សំខាន់បំផុត») ប៉ុណ្ណោះ
+    before_rules = crud.DEFAULT_SYSTEM_PROMPT.split("ច្បាប់សំខាន់បំផុត")[0].lower()
+    check(f"persona (ផ្នែកណែនាំ) គ្មានពាក្យប៊ូតុង {[w for w in button_words if w in before_rules]}",
+          not any(word in before_rules for word in button_words))
+    check("persona មានខ្សែហាមពាក្យប៊ូតុងជាច្បាប់ទី១",
+          "កុំប្រើពាក្យ" in crud.DEFAULT_SYSTEM_PROMPT and "ប៊ូតុង" in crud.DEFAULT_SYSTEM_PROMPT)
     check("TEST_CASES 5 + custom", len(TEST_CASES) == 5 and TEST_CASES[2] == Q)
 
     print(f"\n✅ smoke_test_ai: {PASS}/{PASS + FAIL}")
