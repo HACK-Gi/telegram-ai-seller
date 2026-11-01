@@ -1017,6 +1017,30 @@ async def get_order(session: AsyncSession, order_id: int, *, account_ids: tuple[
     return order
 
 
+async def open_order_for_customer(
+    session: AsyncSession,
+    customer_id: int,
+    product_id: int,
+    *,
+    account_id: int | None = None,
+    since=None,
+) -> Order | None:
+    """បញ្ជាទិញដែលមិនទាន់បង់ប្រាក់ចុងក្រោយសម្រាប់អតិថិជន + ផលិតផលនេះ (QR គ្រាន់តែជា ឯកសាររបស់វា)។
+
+    រក្សា `since` ទុកឱ្យ caller ធ្វើ cooldown មិនមែនក្នុង query — crud គ្រាន់តែអាន។
+    """
+    stmt = select(Order).where(
+        Order.customer_id == customer_id,
+        Order.product_id == product_id,
+        Order.status == OrderStatus.PENDING_PAYMENT,
+    )
+    if account_id is not None:
+        stmt = stmt.where(Order.account_id == account_id)
+    if since is not None:
+        stmt = stmt.where(Order.created_at >= since)
+    return await session.scalar(stmt.order_by(Order.id.desc()).limit(1))
+
+
 async def list_orders(
     session: AsyncSession,
     status: str | None = None,
