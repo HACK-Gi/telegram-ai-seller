@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sqlalchemy import case, delete, func, select, update
@@ -695,11 +696,20 @@ async def low_stock_products(
 # QR Codes
 # ============================================================
 
-async def list_qrcodes(session: AsyncSession, *, owner_admin_id: int | None = None) -> list[QRCode]:
+async def list_qrcodes(
+    session: AsyncSession,
+    *,
+    owner_admin_id: int | None = None,
+    account_ids: Sequence[int] | None = None,
+) -> list[QRCode]:
+    """`account_ids` = បន្ថែមលើវិសាលភាពម្ចាស់៖ staff ឃើញតែ QR របស់ខ្លួន ឬ QR ដែលភ្ជាប់
+    នឹងគណនីដែលខ្លួនគ្រប់គ្រង ប៉ុណ្ណោះ (None = គ្មានការចម្រោះតាមគណនី)។"""
     stmt = select(QRCode).order_by(QRCode.is_default.desc(), QRCode.id)
     clause = _owner_where(QRCode, owner_admin_id)
     if clause is not None:
         stmt = stmt.where(clause)
+    if account_ids is not None:
+        stmt = stmt.where(QRCode.account_id.is_(None) | QRCode.account_id.in_(tuple(account_ids)))
     return list((await session.scalars(stmt)).all())
 
 
@@ -750,25 +760,50 @@ async def delete_qrcode(session: AsyncSession, qr_id: int, *, owner_admin_id: in
 
 
 async def best_qrcode(
-    session: AsyncSession, product_id: int | None = None, *, owner_admin_id: int | None = None
+    session: AsyncSession,
+    product_id: int | None = None,
+    *,
+    owner_admin_id: int | None = None,
+    account_id: int | None = None,
 ) -> QRCode | None:
-    """QR ដែលត្រូវប្រើ៖ ភ្ជាប់នឹងផលិតផល → default → ថ្មីបំផុត **ក្នុងវិសាលភាពម្ចាស់តែប៉ុណ្ណោះ**។
+    """QR ដែលត្រូវប្រើ — លក្ខខណ្ឌលំដាប់ (វិសាលភាពម្ចាស់តែប៉ុណ្ណោះ គ្មានឆ្លងម្ចាស់ D3)៖
 
-    គ្មាន fallback ឆ្លងម្ចាស់ឡើយ (D3) — បើ QR មិនមែនរបស់ម្ចាស់គណនីនោះ ប្រាក់នឹងចូល
-    គណនីអ្នកដទៃ ដែលជាកំហុសលើលុយពិត មិនមែនត្រឹមទិន្នន័យលេចទេ។
+    1. ភ្ជាប់នឹងគណនីដែលលក់ — default មុន រួចថ្មីបំផុត
+    2. ភ្ជាប់នឹងផលិតផល (QR ទូទៅ មិនភ្ជាប់គណនី)
+    3. default របស់ម្ចាស់ (QR ទូទៅ)
+    4. ថ្មីបំផុតរបស់ម្ចាស់ (QR ទូទៅ)
+
+    QR ដែលភ្ជាប់ **គណនីផ្សេង** ត្រូវរាំងទាំងស្រុងនៅពេលមាន `account_id`៖ ប្រាក់នឹងចូល
+    គណនីអ្នកដទៃ ជាកំហុសលើលុយពិត មិនមែនត្រឹមទិន្នន័យលេចទេ។
     """
+
     def scoped(stmt):
         clause = _owner_where(QRCode, owner_admin_id)
-        return stmt.where(clause) if clause is not None else stmt
+        if clause is not None:
+            stmt = stmt.where(clause)
+        if account_id is not None:
+            stmt = stmt.where(QRCode.account_id.is_(None) | (QRCode.account_id == account_id))
+        return stmt
 
-    if product_id:
-        qr = await session.scalar(scoped(select(QRCode).where(QRCode.product_id == product_id).order_by(QRCode.id.desc())).limit(1))
+    # ជំហាន ២–៤ យកតែ QR ទូទៅនៅពេលស្គាល់គណនីលក់ (ជំហាន ១ ធ្លាប់បរាជ័យហើយ)
+    unbound = (QRCode.account_id.is_(None),) if account_id is not None else ()
+
+    if account_id is not None:
+        qr = await session.scalar(
+            scoped(select(QRCode).where(QRCode.account_id == account_id))
+            .order_by(QRCode.is_default.desc(), QRCode.id.desc())
+            .limit(1)
+        )
         if qr is not None:
             return qr
-    qr = await session.scalar(scoped(select(QRCode).where(QRCode.is_default.is_(True))).limit(1))
+    if product_id:
+        qr = await session.scalar(scoped(select(QRCode).where(QRCode.product_id == product_id, *unbound)).order_by(QRCode.id.desc()).limit(1))
+        if qr is not None:
+            return qr
+    qr = await session.scalar(scoped(select(QRCode).where(QRCode.is_default.is_(True), *unbound)).limit(1))
     if qr is not None:
         return qr
-    return await session.scalar(scoped(select(QRCode).order_by(QRCode.id.desc())).limit(1))
+    return await session.scalar(scoped(select(QRCode).where(*unbound)).order_by(QRCode.id.desc()).limit(1))
 
 
 # ============================================================

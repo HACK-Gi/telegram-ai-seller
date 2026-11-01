@@ -641,7 +641,7 @@ async def cb_toggle(callback: CallbackQuery, scope: Scope) -> None:
 async def cb_qrpick(callback: CallbackQuery, scope: Scope) -> None:
     product_id = target_id(callback)
     async with db_session() as session:
-        qrs = await crud.list_qrcodes(session, owner_admin_id=scope.owner_id)
+        qrs = await crud.list_qrcodes(session, owner_admin_id=scope.owner_id, account_ids=scope.ids)
     if not qrs:
         await callback.answer("មិនមាន QR ទេ — បន័ែមក្នុង 💳 QR Code", show_alert=True)
         return

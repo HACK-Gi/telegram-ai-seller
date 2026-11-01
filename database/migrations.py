@@ -15,7 +15,7 @@ from database.models import Base
 
 log = logging.getLogger("db.migrate")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # SQLite ហាម NOT NULL ដោយគ្មាន literal default, ហាម UNIQUE/PRIMARY KEY លើជួងថ្មី,
 # ហើយជួងដែលមាន REFERENCES ត្រូវតែ default NULL — ដូច្នេះ child FK ទាំងអស់ជា plain nullable។
@@ -53,6 +53,8 @@ ADDITIVE_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
     "qrcodes": [
         ("owner_admin_id", "BIGINT"),
+        # ជំហានទី ២.២ — QR ជាលុយពិត ភ្ជាប់នឹងគណនីដែលលក់ (NULL = QR ទូទៅ)
+        ("account_id", "INTEGER"),
     ],
     "stock_codes": [
         ("content", "TEXT NOT NULL DEFAULT ''"),
@@ -81,6 +83,8 @@ INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_telegram_accounts_owner_admin_id ON telegram_accounts (owner_admin_id)",
     "CREATE INDEX IF NOT EXISTS ix_products_owner_admin_id ON products (owner_admin_id)",
     "CREATE INDEX IF NOT EXISTS ix_qrcodes_owner_admin_id ON qrcodes (owner_admin_id)",
+    # ជំហានទី ២.២ — userbot ស្វែង QR តាមគណនីលក់ រាល់ការទិញ
+    "CREATE INDEX IF NOT EXISTS ix_qrcodes_account_id ON qrcodes (account_id)",
 )
 
 

@@ -163,6 +163,11 @@ class QRCode(Base):
     product_id: Mapped[int | None] = mapped_column(
         ForeignKey("products.id", ondelete="SET NULL"), nullable=True
     )
+    # QR ជាលុយពិត៖ ភ្ជាប់នឹងគណនីដែលលក់ ដើម្បីឱ្យប្រាក់ចូលគណនីដែលត្រូវគ្នា។
+    # NULL = QR ទូទៅរបស់ម្ចាស់ ប៉ុន្តែវាមិនដែលជំនួស QR ដែលភ្ជាប់គណនីផ្សេងទេ។
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("telegram_accounts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     product: Mapped[Product | None] = relationship(back_populates="qrcodes")

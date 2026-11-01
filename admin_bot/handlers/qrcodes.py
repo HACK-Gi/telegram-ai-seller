@@ -47,18 +47,26 @@ async def guard_qr(callback: CallbackQuery, qr_id: int, scope: Scope) -> QRCode 
     return qr
 
 
+async def _account_names(session, scope: Scope) -> dict[int, str]:
+    """ឈ្មោះគណនីក្នុងវិសាលភាព — បង្ហាញលើបញ្ជី QR និងក្នុង card។"""
+    accounts = await crud.list_accounts(session, owner_admin_id=scope.owner_id)
+    ids = scope.ids
+    return {item.id: item.name for item in accounts if ids is None or item.id in ids}
+
+
 async def show_list(callback: CallbackQuery, scope: Scope) -> None:
     async with db_session() as session:
-        qrs = await crud.list_qrcodes(session, owner_admin_id=scope.owner_id)
+        qrs = await crud.list_qrcodes(session, owner_admin_id=scope.owner_id, account_ids=scope.ids)
+        names = await _account_names(session, scope)
     if callback.message is None:
         await callback.answer()
         return
     header = "💳 <b>QR Code ទូទាត់</b>\n"
     if not qrs:
-        header += "\n<i>មិនមាន QR ទេ — ចុច ➕ បន័ែម QR</i>"
+        header += "\n<i>មិនមាន QR ទេ — ចុច ➕ បន័ែម QR រួច Upload រូបភាពពី App ធនាគារ</i>"
     else:
-        header += f"\n⭐ = QR លំនាំដើម · សរុប {len(qrs)}"
-    await callback.message.edit_text(header, reply_markup=keyboards.qr_menu(qrs))
+        header += f"\n⭐ = លំនាំដើម · 🤖 = ភ្ជាប់គណនី · សរុប {len(qrs)}"
+    await callback.message.edit_text(header, reply_markup=keyboards.qr_menu(qrs, names))
     await callback.answer()
 
 
@@ -67,7 +75,7 @@ async def show_qr(callback: CallbackQuery, qr_id: int, scope: Scope, toast: str 
     if qr is None:
         return
     async with db_session() as session:
-        card = render.qrcode_card(qr)
+        card = render.qrcode_card(qr, await _account_names(session, scope))
         markup = keyboards.qr_actions(qr)
     file_id, name = qr.image_file_id, qr.name
     if callback.message is None:
@@ -88,14 +96,37 @@ async def cb_qr_root(callback: CallbackQuery, state: FSMContext, scope: Scope) -
 
 
 @router.callback_query(F.data == "qr:add")
-async def cb_add(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AddQR.name)
+async def cb_add(callback: CallbackQuery, state: FSMContext, scope: Scope) -> None:
+    async with db_session() as session:
+        accounts = await crud.list_accounts(session, owner_admin_id=scope.owner_id)
+    ids = scope.ids
+    visible = [item for item in accounts if ids is None or item.id in ids]
     if callback.message is None:
         await callback.answer()
         return
     await callback.message.answer(
-        "💳 <b>បន័ែម QR ថ្មី</b>\n\n📛 ឈ្មោះ (ឧ. ABA របស់ខ្ញុំ):"
+        "🤖 <b>គណនីណាដែល QR នេះទទួលប្រាក់?</b>\n"
+        "<i>ជ្រើសរើសគណនី userbot ដែលលក់ ដើម្បីឱ្យអតិថិជនបង់ចូលគណនីត្រូវគ្នា "
+        "(QR ដែលភ្ជាប់គណនីផ្សេង នឹងមិនត្រូវបានប្រើទេ)</i>:",
+        reply_markup=keyboards.account_picker("qr:addto", visible),
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("qr:addto:"))
+async def cb_add_to(callback: CallbackQuery, state: FSMContext, scope: Scope) -> None:
+    account_id = target_id(callback)
+    if account_id:
+        async with db_session() as session:
+            account = await crud.get_account(session, account_id, owner_admin_id=scope.owner_id)
+        if account is None or (scope.ids is not None and account_id not in scope.ids):
+            log.warning("IDOR: user=%s qr:addto account=%s", scope.admin_id, account_id)
+            await callback.answer("🔒 គណនីនេះមិនមែនរបស់អ្នកទេ", show_alert=True)
+            return
+    await state.update_data(qr_account_id=account_id or None)
+    await state.set_state(AddQR.name)
+    if callback.message is not None:
+        await callback.message.edit_text("💳 <b>បន័ែម QR ថ្មី</b>\n\n📛 ឈ្មោះ (ឧ. ABA របស់ខ្ញុំ):")
     await callback.answer()
 
 
@@ -125,14 +156,17 @@ async def md_account_info(message: Message, state: FSMContext, scope: Scope) -> 
             name=data["qr_name"],
             provider=data["qr_provider"],
             account_info=message.text.strip(),
+            account_id=data.get("qr_account_id"),
             owner_admin_id=scope.admin_id,
         )
         qr_id, markup = qr.id, keyboards.qr_actions(qr)
+        bound = data.get("qr_account_id")
+        bound_label = f"🤖 ភ្ជាប់គណនី <code>#{bound}</code>" if bound else "🌐 QR ទូទៅ (គ្រប់គណនី)"
     await state.update_data(qr_id=qr_id)
 
     await state.set_state(AddQR.image)
     await message.answer(
-        f"✅ បង្កើត QR <code>#{qr_id}</code>\n\n"
+        f"✅ បង្កើត QR <code>#{qr_id}</code> — {bound_label}\n\n"
         "🖼 ផ្ញើ<b>រូបភាព QR</b> ដែលបង Download ពី App ធនាគារ (ABA/Bakong/Wing) មកក្នុង chat នេះ\n"
         "(ឬ <code>skip</code> ទុកទទេ — userbot នឹងមិនផ្ញើរូបណាទេ រហូតដល់បង Upload)",
         reply_markup=markup,
@@ -195,9 +229,10 @@ async def cb_default(callback: CallbackQuery, scope: Scope) -> None:
         return
     async with db_session() as session:
         await crud.set_default_qrcode(session, qr_id, owner_admin_id=scope.owner_id)
-        qrs = await crud.list_qrcodes(session, owner_admin_id=scope.owner_id)
+        qrs = await crud.list_qrcodes(session, owner_admin_id=scope.owner_id, account_ids=scope.ids)
+        names = await _account_names(session, scope)
     if callback.message is not None:
-        await callback.message.edit_text("⭐ បានកំណត់ QR លំនាំដើម", reply_markup=keyboards.qr_menu(qrs))
+        await callback.message.edit_text("⭐ បានកំណត់ QR លំនាំដើម", reply_markup=keyboards.qr_menu(qrs, names))
     await callback.answer("បានកំណត់ជា Default")
 
 

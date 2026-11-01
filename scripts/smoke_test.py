@@ -319,6 +319,7 @@ async def main() -> int:
 
     print("— QR (Upload only) —")
     await panel.cb("qr:add")
+    await panel.cb("qr:addto:0")
     await panel.msg("ABA SMOKE")
     await panel.msg("aba")
     await panel.msg("012 345 678 · ABA · Sok Dara")
@@ -528,6 +529,61 @@ async def main() -> int:
     async with db_session() as session:
         owner_qr = await crud.get_qrcode(session, qr_id, owner_admin_id=None)
         expect("default QR owner នៅដដែល", bool(owner_qr and owner_qr.is_default))
+
+    # ជំហានទី ២.២ — QR ភ្ជាប់គណនី + វិសាលភាពតាម account_ids
+    mark = panel.mark()
+    await panel.cb("qr:add", user_id=STAFF)
+    expect("qr:add សួរថាគណនីណាទទួលប្រាក់", panel.said_since(mark, "គណនីណាដែល QR នេះទទួលប្រាក់?"))
+    mark = panel.mark()
+    await panel.cb(f"qr:addto:{account_id}", user_id=STAFF)
+    expect("staff ភ្ជាប់ QR នឹងគណនីរបស់ owner មិនបាន", panel.said_since(mark, "មិនមែនរបស់អ្នក"))
+    mark = panel.mark()
+    await panel.cb(f"qr:addto:{staff_account_id}", user_id=STAFF)
+    await panel.msg("ABA STAFF ACCT", user_id=STAFF)
+    await panel.msg("aba", user_id=STAFF)
+    await panel.msg("098 765 432 · ABA · Staff", user_id=STAFF)
+    await panel.msg("skip", user_id=STAFF)
+    async with db_session() as session:
+        mine = await crud.list_qrcodes(session, owner_admin_id=STAFF)
+        bound = [item for item in mine if item.name == "ABA STAFF ACCT"]
+        bound_id = bound[0].id if bound else None
+    expect("staff បង្កើត QR ភ្ជាប់គណនីខ្លួនបាន", bound_id is not None and bound[0].account_id == staff_account_id)
+    if bound_id is not None:
+        mark = panel.mark()
+        await panel.cb(f"qr:view:{bound_id}", user_id=STAFF)
+        expect("card បង្ហាញគណនីដែល QR ភ្ជាប់", panel.said_since(mark, "គណនីដែលលក់"))
+
+    async with db_session() as session:
+        await crud.create_qrcode(
+            session, name="QR KHIR ACCOUNT SMOKE", provider="ABA", account_info="owner account number",
+            owner_admin_id=STAFF, account_id=account_id,
+        )
+        visible = await crud.list_qrcodes(session, owner_admin_id=STAFF, account_ids=(staff_account_id,))
+        unscoped = await crud.list_qrcodes(session, owner_admin_id=STAFF)
+    expect(
+        "QR ដែលភ្ជាប់គណនីក្រៅវិសាលភាព មិនលេចក្នុងបញ្ជី staff",
+        any(item.name == "QR KHIR ACCOUNT SMOKE" for item in unscoped)
+        and not any(item.name == "QR KHIR ACCOUNT SMOKE" for item in visible),
+    )
+    mark = panel.mark()
+    await panel.cb("menu:qr", user_id=STAFF)
+    expect("បញ្ជី QR ក្នុង Panel មិនបង្ហាញ QR ក្រៅគណនី staff", panel.says_not_since(mark, "QR KHIR ACCOUNT SMOKE"))
+
+    # លំដាប់ជ្រើស QR តាមគណនីលក់ — ប្រាក់ត្រូវចូលគណនីដែលត្រូវគ្នា
+    async with db_session() as session:
+        await crud.create_qrcode(
+            session, name="QR ACCT SMOKE", provider="ABA", account_info="account specific",
+            owner_admin_id=OWNER, account_id=account_id,
+        )
+        picked = await crud.best_qrcode(session, owner_admin_id=OWNER, account_id=account_id)
+        other = await crud.best_qrcode(session, owner_admin_id=OWNER, account_id=staff_account_id)
+        plain = await crud.best_qrcode(session, owner_admin_id=OWNER)
+    expect("QR ភ្ជាប់គណនីឈ្នះលើ default ទូទៅ", picked is not None and picked.name == "QR ACCT SMOKE")
+    expect(
+        "លក់លើគណនីផ្សេង → fallback QR ទូទៅ មិនយក QR គណនីអ្នកដទៃ",
+        other is not None and other.account_id is None,
+    )
+    expect("គ្មាន account_id → វិធីចាស់នៅដំណើរការ", plain is not None and plain.name == "ABA SMOKE")
 
     mark = panel.mark()
     await panel.msg("/accounts", user_id=STAFF)

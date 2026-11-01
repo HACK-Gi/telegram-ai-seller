@@ -163,11 +163,16 @@ def confirm_action(label: str, confirm_data: str) -> InlineKeyboardMarkup:
     )
 
 
-def qr_menu(qrs: Sequence[QRCode]) -> InlineKeyboardMarkup:
-    rows = [
-        [(("⭐ " if item.is_default else "▫️ ") + f"{esc(item.name)} [{esc(item.provider)}]", f"qr:view:{item.id}")]
-        for item in qrs
-    ]
+def qr_menu(qrs: Sequence[QRCode], account_names: dict[int, str] | None = None) -> InlineKeyboardMarkup:
+    rows = []
+    for item in qrs:
+        tag = ""
+        if item.account_id is not None:
+            label = esc((account_names or {}).get(item.account_id) or f"#{item.account_id}")
+            tag = f" 🤖{label}"
+        rows.append(
+            [(("⭐ " if item.is_default else "▫️ ") + f"{esc(item.name)} [{esc(item.provider)}]{tag}", f"qr:view:{item.id}")]
+        )
     rows.append([("➕ បន័ែម QR (Upload រូបភាព)", "qr:add")])
     rows.append([BACK_MAIN])
     return build(rows)
@@ -183,6 +188,14 @@ def qr_actions(qr: QRCode) -> InlineKeyboardMarkup:
 def product_picker(action_prefix: str, products: Sequence[Product]) -> InlineKeyboardMarkup:
     rows = [[(f"#{item.id} {esc(item.name)}", f"{action_prefix}:{item.id}")] for item in products]
     rows.append([("⏭ ប្រើ QR Default", f"{action_prefix}:0"), ("⬅️ ត្រឡប់", "menu:products"), BACK_MAIN])
+    return build(rows)
+
+
+def account_picker(action_prefix: str, accounts: Sequence[Account], *, back_data: str = "menu:qr") -> InlineKeyboardMarkup:
+    """ជ្រើសរើសគណនីដែល QR នេះជាការបង់ប្រាក់ពិតប្រាកដ — `{prefix}:0` = QR ទូទៅ។"""
+    rows = [[(f"🤖 #{item.id} {esc(item.name)}", f"{action_prefix}:{item.id}")] for item in accounts]
+    rows.append([("🌐 គ្មាន (QR ទូទៅ សម្រាប់គ្រប់គណនី)", f"{action_prefix}:0")])
+    rows.append([("⬅️ ត្រឡប់", back_data), BACK_MAIN])
     return build(rows)
 
 

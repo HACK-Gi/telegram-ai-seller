@@ -92,11 +92,16 @@ def account_card(account: Account) -> str:
     )
 
 
-def qrcode_card(qr: QRCode) -> str:
+def qrcode_card(qr: QRCode, account_names: dict[int, str] | None = None) -> str:
     lines = [
         f"💳 <b>{esc(qr.name)}</b>  <code>#{qr.id}</code>  [{esc(qr.provider)}]",
         f"{'⭐ Default' if qr.is_default else '⚪ មិនមែន default'}",
     ]
+    if qr.account_id is not None:
+        label = esc((account_names or {}).get(qr.account_id) or f"#{qr.account_id}")
+        lines.append(f"🤖 គណនីដែលលក់ → ប្រាក់ចូលគណនីនេះតែមួយ៖ {label} (<code>#{qr.account_id}</code>)")
+    else:
+        lines.append("🌐 QR ទូទៅ — ប្រើបានគ្រប់គណនី ប៉ុន្តែ QR ដែលភ្ជាប់គណនីនីមួយៗ មានអាទិភាពជាង")
     if qr.account_info:
         lines.append(f"🔖 {esc(shorten(qr.account_info, 200))}")
     if qr.image_file_id:

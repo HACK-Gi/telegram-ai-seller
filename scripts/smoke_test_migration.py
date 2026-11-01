@@ -34,12 +34,17 @@ src.close()
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{SCRATCH}"
 os.environ["AI_BACKEND"] = "mock"
 
+from sqlalchemy import delete  # noqa: E402
+
 import database.crud as crud  # noqa: E402
 from database import migrations, session as dbsession  # noqa: E402
-from database.models import OrderStatus  # noqa: E402
+from database.models import Account, OrderStatus, QRCode  # noqa: E402
 
 PASS = 0
 FAIL = 0
+
+# ជួងដែល migration ត្រូវរក្សាទុកដូចចាស់ — «owner_admin_id» ពិនិត្យដាច់ដោយឡែក ព្រោះវាត្រូវ backfill
+QR_KEEP = ("id, name, provider, account_info, image_file_id, image_path, is_default, product_id")
 
 
 def check(name: str, cond: bool) -> None:
@@ -53,6 +58,16 @@ def check(name: str, cond: bool) -> None:
 
 
 async def main() -> int:
+    with sqlite3.connect(str(SCRATCH)) as con:
+        # ជួរចាស់មួយ ដើម្បីឱ្យការប្រៀបធៀប «មុន/ក្រោយ» មានន័យ (DB ពិតអាចទទេ)
+        con.execute(
+            "INSERT INTO qrcodes (name, provider, account_info, image_file_id, image_path, is_default, "
+            "product_id, created_at, owner_admin_id) VALUES ('LEGACY QR', 'ABA', '012 000 111', 'fileid_legacy', "
+            "'media/qr/legacy.jpg', 1, NULL, '2026-01-01 07:00:00', NULL)"
+        )
+        con.commit()
+        qr_pre = con.execute(f"SELECT {QR_KEEP} FROM qrcodes ORDER BY id").fetchall()  # noqa: S608
+
     # ១) ដាក់លំនាំដើមចាស់ «យ fictitious fresh» ដើម្បីឱ្យ refresh កំណត់បាន
     async with dbsession.SessionFactory() as s:
         row = await s.get(crud.Setting, "system_prompt")
@@ -94,6 +109,41 @@ async def main() -> int:
         check("កំណត់ហេតុម្ចាស់ ត្រូវរក្សាទុក", (await crud.get_setting(s, "system_prompt")) == "MY CUSTOM PROMPT")
         row = await s.get(crud.Setting, "system_prompt")
         row.value = crud.DEFAULT_SYSTEM_PROMPT
+        await s.commit()
+
+    print("\n[1b] Migration ២.២ — qrcodes.account_id additive (ទិន្នន័យចាស់មិនបាត់)")
+    with sqlite3.connect(str(SCRATCH)) as con:
+        cols = {row[1] for row in con.execute("PRAGMA table_info(qrcodes)")}
+        qr_post = con.execute(
+            f"SELECT {QR_KEEP}, (owner_admin_id IS NOT NULL), account_id FROM qrcodes ORDER BY id"
+        ).fetchall()  # noqa: S608
+        qr_indexes = {row[0] for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='qrcodes'")}
+    check("ជួង qrcodes.account_id ត្រូវបានបន្ថែម", "account_id" in cols)
+    check(f"QR {len(qr_pre)} ជួរចាស់ រក្សាខ្លឹមសារគ្រប់ជួង (គ្មានបាត់/គ្មានប្តូរ)",
+          [row[:8] for row in qr_post] == qr_pre)
+    check("ជួងចាស់ត្រូវ backfill ម្ចាស់ មិនមែនលុបចោល", all(row[8] == 1 for row in qr_post))
+    check("QR ចាស់ទាំងអស់ → account_id NULL (មិន guess គណនី)", all(row[9] is None for row in qr_post))
+    check("index ix_qrcodes_account_id ត្រូវបានបង្កើត", "ix_qrcodes_account_id" in qr_indexes)
+
+    async with dbsession.SessionFactory() as s:
+        acct = await crud.create_account(s, "+85519990007", "encrypted-session", "QR MIG", owner_admin_id=None)
+        qr = await crud.create_qrcode(
+            s, name="QR MIG", provider="ABA", account_info="012999000 ABA",
+            account_id=acct.id, owner_admin_id=None,
+        )
+        await s.commit()
+        acct_id, qr_new_id = acct.id, qr.id
+    await migrations.migrate()
+    async with dbsession.SessionFactory() as s:
+        again = await crud.get_qrcode(s, qr_new_id)
+        check("migration ម្តងទៀត → QR ថ្មីនៅរក្សា account_id", again is not None and again.account_id == acct_id)
+        ladder = await crud.best_qrcode(s, owner_admin_id=None, account_id=acct_id)
+        check("best_qrcode រកឃើញ QR ដែលភ្ជាប់គណនី", ladder is not None and ladder.id == qr_new_id)
+        other = await crud.best_qrcode(s, owner_admin_id=None, account_id=acct_id + 999)
+        check("គណនីផ្សេង → មិនយក QR របស់គណនីនេះ", other is None or other.account_id is None)
+        await s.execute(delete(QRCode).where(QRCode.id == qr_new_id))
+        await s.execute(delete(Account).where(Account.id == acct_id))
         await s.commit()
 
     print("\n[2] Categories + backfill លើទិន្នន័យពិត (ច្បាប់)")
