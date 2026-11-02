@@ -52,9 +52,8 @@ def _session_web_hint(format_type: str = "html") -> str:
     """តំណទៅគេហទំព័រ Make Session (session_web/) — ទទេ ពេល URL មិនចាប់ផ្តើមដោយ http
     (មិនទាន់ deploy ឬម្ចាស់បិតតំណដោយដាក់ `SESSION_WEB_URL=off`)។
 
-    ហៅពេល handler ជំនួសពេល import ព្រោះ test អាច rebind `config.settings` ហើយ
-    URL ពិតប្រាកដដឹងតែក្រោយ `vercel --prod`។ format_type = "html" សម្រាប់ HOWTO,
-    "markdown" សម្រាប់ /addsession (parse_mode របស់សារនីមួយៗខុសគ្នា)។
+    ហៅពេល handler ជំនួសពេល import ព្រោះ URL ពិតប្រាកដដឹងតែក្រោយ `vercel --prod`
+    ហើយ test អាច patch `accounts.settings` ដើម្បីសាកល្បងផ្លូវ «មិនទាន់ deploy»។
     """
     url = (settings.session_web_url or "").strip()
     if not url.startswith("http"):

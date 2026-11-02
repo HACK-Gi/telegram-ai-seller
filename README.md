@@ -42,7 +42,7 @@ Mock Telegram session ក្នុង `admin_bot/mock.py` សម្រាប់�
 
 ```bash
 python main.py                      # Admin Bot + កិច្ចស្វ័យប្រវត្តិ
-python scripts/smoke_test.py        # តេស្ត ១៩២ ជំហានក្នុង Panel (គ្មាន token, គ្មានបណ្តាញ)
+python scripts/smoke_test.py        # តេស្ត ១៩៥ ជំហានក្នុង Panel (គ្មាន token, គ្មានបណ្តាញ)
 python scripts/smoke_test_ai.py     # តេស្ត ៣៧ checks — echo guard + fallback chain
 python scripts/smoke_test_userbot.py    # តេស្ត ២០៣ checks — sticky + catalog + voice gate (គ្មានបណ្តាញ)
 python scripts/smoke_test_migration.py  # តេស្ត ៤៨ checks — migration v4 + oversell (ច្បាប់ app.db, គ្មានប៉ះពិត)
@@ -209,9 +209,12 @@ data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — 
 1. ដាក់ `TG_API_ID` + `TG_API_HASH` (App របស់អ្នកពី **my.telegram.org → API development
    tools**) និង `SESSION_FERNET_KEY` (បង្កើត៖ `python scripts/generate_keys.py --write`) ក្នុង
    `.env` — គ្រប់គណនីប្រើ App តែមួយ ដូច្នេះគ្មានតម្លៃណាវាយតាម chat ទេ។
-2. បង្កើត Session String ក្នុង terminal របស់អ្នក:
-   `.venv/bin/python scripts/get_session.py +855XXXXXXXX` → វាយ OTP (និង 2FA បើមាន) ក្នុង
-   terminal ខ្លួនឯង ទើប code មិនដែលចូល Telegram chat → ចម្លងកូដវែងដែលបង្ហាញចេញ។
+2. បង្កើត Session String តាមមួយក្នុងចំណោមពីរផ្លូវ (OTP/2FA វាយចូលកន្លែងដែល មិនមែន
+   chat របស់ Bot)៖
+   * **Terminal របស់អ្នក** — `.venv/bin/python scripts/get_session.py +855XXXXXXXX`
+     (ផ្លូវដែលទំនងជាងគេ ព្រោះ Telegram មិនសូវសង្ស័យ IP របស់អ្នក)
+   * **គេហទំព័រ Make Session** `<web-session>` — សម្រាប់ភ្ញៀវមិនរត់ Python (មើលផ្នែក
+     «🌐 Deploy Session Web App» ខាងក្រោម)
 3. ផ្ញើវាទៅ Bot តាម `/addsession` (ឬចុច ➕/ប៊ូតុង Session String ក្នុង menu Accounts) —
    Bot លុបសារភ្លាម រួច Validate → Encrypt → Save ក្នុង DB ហើយភ្ជាប់គណនី។ ខុសទ្រង់ទ្រាយ
    ឬផុតកំណត់ → បដិសេធ + ណែនាំបង្កើតថ្មី (គ្មាន row សល់) និង `/cancel` បោះបង់គ្រប់ពេល។
@@ -241,16 +244,68 @@ data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — 
   product_code, stock reservation, default prompt refresh (ជំនួសតែលំនាំដើមចាស់ មិនប៉ះ
   កំណត់ហេតុម្ចាស់)។
 
+## 🌐 Deploy Session Web App (`session_web/`)
+
+គេហទំព័រ «Make Session» ឱ្យភ្ញៀវបង្កើត Session String ខ្លួនឯង (OTP → StringSession) រួចចម្លង
+មកផ្ញើ `/addsession` — មិនត្រូវ install Python។ គ្មាន Database/File/Log របស់ api_hash, លេខ
+ទូរស័ព្ទ, OTP ឬ session ទេ ហើយ pending state រវាង request ទី១–២ ជា **Fernet token stateless**
+(single-use + TTL) ព្រោះ serverless isolate មិនចែក memory គ្នា។ ឯកសារពេញ: `session_web/README.md`។
+
+```bash
+# ១. រត់ក្នុង machine (សាកល្បងមុន deploy)
+.venv/bin/python session_web/app.py                      # → http://127.0.0.1:5050
+
+# ២. Deploy ទៅ Vercel (ឥតគិតថ្លៃ) — ត្រូវ log in រួច (`vercel whoami`)
+cd session_web
+vercel deploy --prod --yes --project bot-auto-sell-make-session --create-if-missing
+#  គួរឃើញ: ▲ Aliased  https://bot-auto-sell-make-session.vercel.app
+
+# ៣. Secret សម្រាប់ sign pending token (បើមិនដាក់ → key បណ្តោះអាសន្ន per isolate
+#    ហើយភ្ញៀវត្រូវសុំ OTP ឡើងវិញពេល isolate ផ្លាស់ប្តូរ)
+.venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+  | vercel env add SESSION_WEB_SECRET --environment production --project bot-auto-sell-make-session --non-interactive
+
+# ៤. Redeploy ដើម្បី apply env var
+vercel deploy --prod --yes --project bot-auto-sell-make-session
+```
+
+បន្ទាប់ពី deploy រួច ដាក់ URL ពិតក្នុង `.env` របស់ Bot រួច restart (តំណនេះបង្ហាញក្នុង
+`/addsession` និង menu Accounts → របៀបប្រើ)៖
+
+```
+SESSION_WEB_URL=https://bot-auto-sell-make-session.vercel.app
+```
+
+> ⚠️ **Vercel = AWS IP** — Telegram តែងសង្ស័យ login ពី datacenter (អាចជួប
+> `PhoneNumberAppForbidden` ឬ ត្រូវចុច link ដែល Telegram ផ្ញើទៅ app)។ បើបរាជ័យ →
+> ប្រើ `scripts/get_session.py` លើ machine របស់ភ្ញៀវ, ផ្លាស់ទៅ Render/Railway (always-on),
+> ឬ tool ฝั่ง client ដូចជា <https://gabrielmaialva33.github.io/ssg/> (session មិនឆ្លង server)។
+> ⚠️ Server-side generator ឃើញ api_hash របស់ភ្ញៀវជានិច្ច (វាត្រូវប្រើវា) — កុំបើក request-body
+> log នៅ layer ខាងមុខ ហើយកុំចែក `SESSION_WEB_SECRET`/`SESSION_FERNET_KEY` ទៅណាទេ។
+> បើមិនទាន់ deploy → ដាក់ `SESSION_WEB_URL=off` ដើម្បីលាក់តំណពី Bot។
+
+## 👥 Multi-User (Owner + Staff)
+
+* `/addsession` **គ្មាន owner-only guard** — Owner និង Staff (`ADMIN_IDS` ឬ DB admin) បន្ថែម
+  គណនីផ្ទាល់ខ្លួនបាន។ `StaffGate` បន្ថែម `scope` ទៅគ្រប់ handler ដោយស្វ័យប្រវត្តិ។
+* គណនីដែលបន្ថែម ជាប់នឹង `owner_admin_id = scope.admin_id` (អ្នកដែលផ្ញើ session)។
+* `/accounts` តាម scope៖ Owner ឃើញទាំងអស់ (`owner_id=None`) · Staff ឃើញតែគណនីខ្លួន ·
+  គណនីដែល admin ផ្សេងកាន់កាប់ហើយ → បដិសេធ (IDOR guard) ហើយត្រូវ Owner ប្ដូរម្ចាស់
+  (`acc:owner:`)។
+* Web App គាំទ្រ multi-user ដោយធម្មជាតិ — pending token ជា stateless Fernet មិនមាន
+  per-process session ទេ។
+
 ## 🧪 Testing
 
 គ្រប់តេស្តរត់ **ក្នុង machine តែមួយ** — គ្មាន BOT_TOKEN ពិត គ្មានបណ្តាញ Telegram គ្មានប៉ះ
 `data/app.db` (រាល់ suite បង្កើត DB សាកល្បងរបស់វាខ្លួនឯង)៖
 
 ```bash
-.venv/bin/python scripts/smoke_test.py         # ១៩២ ជំហាន — Panel ទាំងមូលឆ្លងកាត់ dispatcher + MockSession
+.venv/bin/python scripts/smoke_test.py         # ១៩៥ ជំហាន — Panel ទាំងមូលឆ្លងកាត់ dispatcher + MockSession
 .venv/bin/python scripts/smoke_test_ai.py      # ៣៧  checks — echo guard, fallback chain, mock មិនស្ងាត់
 .venv/bin/python scripts/smoke_test_userbot.py # ២០៣ checks — sticky, catalog, rate cap, session crypto
 .venv/bin/python scripts/smoke_test_migration.py # ៤៨ checks — migration idempotent + oversell (ច្បាប់ app.db)
+.venv/bin/python scripts/smoke_test_session_web.py # ៤១ checks — Make Session web (Telethon fake, Flask test_client)
 ```
 
 **ច្បាប់ដែលតេស្តការពារ (ចុះឈ្មោះគណនី)៖**
@@ -282,7 +337,7 @@ data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — 
       (២០៣/២០៣ checks គ្មានបណ្តាញ — live test ត្រូវការ TG_API_ID/HASH + Fernet key)
 * [x] **ជំហានទី ២.១b** — ហាងលក់ពេញលេញ៖ ៧ ប្រភេទ + product_code, stock reservation
       + oversell prevention, inline catalog (welcome→categories→product→🛒→QR),
-      voice/video rejection, prompt ថ្មី categories-aware (Panel ១៩២ · userbot ២០៣ ·
+      voice/video rejection, prompt ថ្មី categories-aware (Panel ១៩៥ · userbot ២០៣ ·
       migration ៤៨ · AI ៣៧ ឆ្លងកាត់ទាំងអស់)
 * [ ] **ជំហានទី ២.២** — ភ្ជាប់ Panel ឱ្យបញ្ជា userbot ផ្ទាល់ (send-from-sticky-account, live status) + live test
 * [ ] **ជំហានទី ៣** — SaaS $3/ខែ (តែលើ Bot API)៖ `/subscribe`, ស្លីប, admin បញ្ជាក់, ជូនដំណឹងមុនផុតកំណត់ ៣ ថ្ងៃ

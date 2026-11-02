@@ -701,10 +701,18 @@ async def main() -> int:
     expect("/addsession → ណែនាំ my.telegram.org", panel.said_since(mark, "my.telegram.org"))
     expect("/addsession → រំលឹកសារ Auto-delete", panel.said_since(mark, "សារនេះនឹងត្រូវលុបភ្លាម"))
     expect("/addsession → រំលឹក Encrypt + Save", panel.said_since(mark, "Encrypt + Save"))
+    expect("/addsession → បង្ហាញតំណ Web App", panel.said_since(mark, config.settings.session_web_url))
 
     mark = panel.mark()
     await panel.cb("acc:howto")
     expect("acc:howto → api_hash មិនដែលវាយតាម chat", panel.said_since(mark, "api_hash មិនដែលវាយតាម chat"))
+    expect("acc:howto → បង្ហាញតំណ Web App", panel.said_since(mark, config.settings.session_web_url))
+    # មិនទាន់ deploy (URL មិនចាប់ផ្តើមដោយ http) → សារត្រូវតែគ្មានតំណ
+    accounts_handlers.settings = dataclasses.replace(config.settings, session_web_url="off")
+    mark = panel.mark()
+    await panel.cb("acc:howto")
+    expect("URL=off → acc:howto លាក់តំណ Web App", not panel.said_since(mark, "🌐"))
+    accounts_handlers.settings = config.settings
 
     mark = panel.mark()
     await panel.msg("/cancel", user_id=STAFF)
@@ -828,6 +836,18 @@ async def main() -> int:
            (await fetch_account(LOGIN_PHONE)).session_encrypted == (again.session_encrypted if again else None))
     expect("IDOR បរាជ័យ → មិន reconcile ថ្មី", fake_manager.reconciled == reconciled_before)
     manager_module._manager = None
+
+    # ១១) Multi-user — Staff ម្នាក់ឃើញតែគណនីខ្លួន, Owner ឃើញទាំងអស់
+    STAFF2 = 777000457
+    async with db_session() as session:
+        await crud.add_admin(session, STAFF2, "Staff SMOKE 2")
+        await session.commit()
+    mark = panel.mark()
+    await panel.msg("/accounts", user_id=STAFF2)
+    expect("Staff ទី២ → /accounts មិនបង្ហាញគណនីរបស់ Staff ទី១", not panel.said_since(mark, LOGIN_PHONE))
+    mark = panel.mark()
+    await panel.msg("/accounts", user_id=OWNER)
+    expect("Owner → /accounts ឃើញគណនីរបស់ Staff", panel.said_since(mark, LOGIN_PHONE))
 
     expect("គ្រប់ flow → គ្មានសារ «កូដ OTP» សោះ", panel.says_not_since(0, "កូដ OTP"))
 
