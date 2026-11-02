@@ -20,6 +20,8 @@ os.environ["USE_MOCK_BOT"] = "1"
 os.environ["BOT_TOKEN"] = ""
 os.environ["AI_BACKEND"] = "qoder_cli"
 os.environ["QODER_CLI_BIN"] = "qoder"
+# កុំឱ្យរចនាសម្ព័ន្ធ chain អាស្រ័យ GROQ_API_KEY ក្នុង .env (តេស្តនេះត្រូវ offline សុទ្ធ)
+os.environ["GROQ_API_KEY"] = ""
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./data/smoke_ai.db"
 os.environ["OWNER_ID"] = "700000001"
 os.environ["TG_API_ID"] = ""
@@ -123,15 +125,16 @@ async def main() -> None:
     ai_engine._engine = None
     engine = ai_engine.get_engine()
     check("get_engine → BackendChain", isinstance(engine, BackendChain))
-    check("chain មាន ២ backend", len(engine._engines) == 2 and engine._engines[0].name == "qoder_cli")
-    check("fallback ជា openai", engine._engines[1].name == "openai")
+    check("chain មាន ៣ backend", len(engine._engines) == 3 and engine._engines[0].name == "qoder_cli")
+    check("fallback លំដាប់ openai → mock", [e.name for e in engine._engines[1:]] == ["openai", "mock"])
     ai_engine._engine = None
 
     os.environ["AI_BACKEND"] = "mock"
     from ai_engine import _fallback_engines
 
     check("mock → គ្មាន chain (តេស្តសុទ្ធ)", _fallback_engines(FakeEngine("mock", [])) == [])
-    check("openai primary → មិនខ្វែងគ្នា", _fallback_engines(FakeEngine("openai", [])) == [])
+    check("openai primary → សល់តែ mock (មិនខ្វែង)",
+          [e.name for e in _fallback_engines(FakeEngine("openai", []))] == ["mock"])
     del os.environ["AI_BACKEND"]
 
     # ---------- ៥. few-shot defaults ----------

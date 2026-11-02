@@ -2,10 +2,22 @@
 from __future__ import annotations
 
 import asyncio
+from urllib.parse import urlparse
 
 import aiohttp
 
 from ai_engine.base import AIEngine, AIError, Turn, clamp
+
+
+def _hint_for(endpoint: str) -> str:
+    """Local endpoint down → most likely the Qoder proxy isn't running."""
+    host = urlparse(endpoint).hostname or ""
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return (
+            f"\n({endpoint} មិនឆ្លើយ — បើវាជា Qoder Proxy សូមរត់: ./scripts/run_qoder_proxy.sh"
+            f" ឬ ./scripts/install_qoder.sh បើគ្មាន qodercli)"
+        )
+    return ""
 
 
 def to_messages(system: str, history: list[Turn], user_text: str) -> list[dict[str, str]]:
@@ -63,7 +75,7 @@ class OpenAICompatEngine(AIEngine):
         except AIError:
             raise
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            raise AIError(f"មិនអាចទាក់ទង endpoint បាន: {exc}") from exc
+            raise AIError(f"មិនអាចទាក់ទង endpoint បាន: {exc}{_hint_for(self.endpoint)}") from exc
 
         try:
             content = data["choices"][0]["message"]["content"]

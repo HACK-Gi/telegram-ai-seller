@@ -31,7 +31,7 @@ cp .env.example .env      # រួចកែតម្លៃក្នុង .env
 | `BOT_TOKEN` | Token ពី `@BotFather`។ ដាក់ `MOCK` បើសាកល្បងដោយគ្មានបណ្តាញ |
 | `OWNER_ID` | Telegram ID របស់ម្ចាស់ (រកពី `@userinfobot`) — គត់គេដែលចូល Settings/Admins បាន |
 | `ADMIN_IDS` | ID ជំនួយ (ឆ្លាស់គ្នាដោយ `,`) អាចទទេ |
-| `AI_BACKEND` | `mock` \| `qoder_cli` \| `openai` \| `ollama` |
+| `AI_BACKEND` | `mock` \| `groq` \| `qoder_cli` \| `openai` \| `ollama` (ណែនាំ `openai` = Qoder Proxy, មើល ៤.១) |
 | `SESSION_FERNET_KEY` | បង្កើត៖ `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` (ប្រើនៅជំហានទី ២) |
 | `TG_API_ID` / `TG_API_HASH` | **មិនចាំបាច់** — api_id/api_hash ជារបស់គណនីនីមួយៗ (វាយតាម `/addaccount`, Encrypt ក្នុង DB)។ ទុកទទេ = គ្មាន fallback សម្រាប់គណនីចាស់ |
 
@@ -43,9 +43,13 @@ Mock Telegram session ក្នុង `admin_bot/mock.py` សម្រាប់�
 ```bash
 python main.py                      # Admin Bot + កិច្ចស្វ័យប្រវត្តិ
 python scripts/smoke_test.py        # តេស្ត ១២១ ជំហានក្នុង Panel (គ្មាន token, គ្មានបណ្តាញ)
-python scripts/smoke_test_ai.py     # តេស្ត ៣២ checks — echo guard + fallback chain
+python scripts/smoke_test_ai.py     # តេស្ត ៣៧ checks — echo guard + fallback chain
 python scripts/smoke_test_userbot.py    # តេស្ត ១១៥ checks — sticky + catalog + voice gate (គ្មានបណ្តាញ)
 python scripts/smoke_test_migration.py  # តេស្ត ៣២ checks — migration v4 + oversell (ច្បាប់ app.db, គ្មានប៉ះពិត)
+./scripts/install_qoder.sh          # ដំឡើង/ផ្ទៀងផ្ទាត់ Qoder CLI (សម្រាប់ Qoder Proxy)
+./scripts/run_qoder_proxy.sh --bg   # រត់ OpenAI-compatible Proxy នៅ port 3000
+python scripts/test_qoder_proxy.py  # តេស្ត Proxy ពិតតាម HTTP (health + chat + 400)
+python scripts/test_ai_engines.py   # តេស្តគ្រប់ backend + Fallback Chain (ត្រូវការបណ្តាញ)
 ```
 
 `main.py` នឹង៖ បង្កើតតារាង + តម្លៃលំនាំដើម → ចាប់ផ្តើម APScheduler → poll Telegram។
@@ -97,13 +101,18 @@ WantedBy=multi-user.target
 
 ## ៤. ម៉ាស៊ីន AI (pluggable)
 
-`ai_engine/` មាន ៤ ក្បាល ជ្រើសរើសដោយ `AI_BACKEND`៖
+`ai_engine/` មាន ៥ ក្បាល ជ្រើសរើសដោយ `AI_BACKEND`៖
 
 * `mock` — ឆ្លើយតាម keyword សម្រាប់សាកល្បង (គ្មានបណ្តាញ)
+* `groq` — Groq API (OpenAI-compatible, ឥតគិតថ្លៃ)។ **ចំណាំ:** `llama-3.1-70b-versatile`
+  ត្រូវបាន decommissioned (Error 400) ហើយ `llama-3.3-70b-versatile` ក៏មិនមានលើ key
+  គ្រប់គ្នាដែរ — ម៉ូដែលដែលតេស្តឆ្លងហើយ: `qwen/qwen3.8-27b`, `openai/gpt-oss-120b`,
+  `allam-2-7b` (រកមើលរបស់ key អ្នក: `curl -s https://api.groq.com/openai/v1/models -H "Authorization: Bearer $KEY"`)
 * `qoder_cli` — ហៅ CLI តាម `asyncio.create_subprocess_exec` (**មិនឆ្លងកាត់ shell** ដូច្នេះ
   អត្ថបទពីអតិថិជនមិនអាចចាក់បញ្ចូល command បានទេ)។ តម្លៃ `{prompt}` ក្នុង `QODER_CLI_ARGS`
   ត្រូវជំនួសដោយ transcript ទាំងមូល។ *កុំភ្លេច៖ ពិនិត្យ license/usage terms របស់ CLI មុនប្រើក្នុងបរិបទពាណិជ្ជកម្ម។*
 * `openai` — endpoint ណាក៏បានដែលមាន `/chat/completions` (vLLM, LM Studio, OpenRouter…)
+  រួមទាំង **Qoder Proxy** នៅក្នុង machine របស់អ្នក (មើល ៤.១)
 * `ollama` — `/api/chat`
 
 Prompt ដែលផ្ញើទៅ AI = System Prompt + Few-shot + **Catalog ផលិតផលពី DB**
@@ -111,9 +120,49 @@ Prompt ដែលផ្ញើទៅ AI = System Prompt + Few-shot + **Catalog ផ
 ថាកុំបញ្ចេញ Code ដោយខ្លួនឯង។
 
 `BackendChain` (`ai_engine/chain.py`) រក្សាស្ថិរភាព៖ ចម្លើយទទេ/ខ្លីពេក/ជា echo → retry ម្តង
-រួចលោតទៅ fallback (openai បើ `OPENAI_BASE_URL` មាន)។ បើគ្រប់ backend បរាជ័យ → ម្ចាស់ទទួល
-"⚠️ AI ទាំងអស់បរាជ័យ!" ហើយអតិថិជនទទួលសារសុវត្ថិភាព «សូមរង់ចាំបន្តិច ខ្ញុំកំពុងពិនិត្យ។»។
+រួចលោតទៅ fallback (groq បើ `GROQ_API_KEY` មាន, openai បើ `OPENAI_BASE_URL` មាន) ហើយបញ្ចប់
+ដោយ `mock` ជាក្តាមសង្រ្គោះ ដើម្បីកុំឱ្យ Bot ស្ងាត់ទាំងស្រុង។ នៅពេលចម្លើយចេញពី mock ម្ចាស់ទទួល
+សារជូនដំណឹង (១×/ម៉ោង/គណនី) ព្រោះ mock មិនបោះកំហុស។ បើគ្មាន fallback ឡើយ និងគ្រប់ backend
+បរាជ័យ → ម្ចាស់ទទួល "⚠️ AI ទាំងអស់បរាជ័យ!" ហើយអតិថិជនទទួលសារសុវត្ថិភាព
+«សូមរង់ចាំបន្តិច ខ្ញុំកំពុងពិនិត្យ។»។
 Panel បង្ហាញ backend ពិត (`backend: qoder_cli · 12.3s`) ជាមួយ ⚠️ ពេលលោត fallback។
+
+### ៤.១ AI Backend Setup (Qoder CLI + Proxy)
+
+Qoder CLI មិនមែនជា HTTP server ទេ ដូច្នេះ `scripts/qoder_proxy.py` (FastAPI + uvicorn) បំប្លែង
+`POST /v1/chat/completions` ទៅជាការហៅ `qodercli -p` ម្តង រួចឆ្លើយតបជាទម្រង់ OpenAI។ Bot រត់
+`AI_BACKEND=openai` ចង្អុលមកវា ដូច្នេះមិនត្រូវការ API key ទេ។
+
+```bash
+# ១. ដំឡើង/ផ្ទៀងផ្ទាត់ CLI (write PATH ទៅ ~/.bashrc បើកូវខ្វះ)
+./scripts/install_qoder.sh
+
+# ២. រត់ Proxy នៅ port 3000 (--bg = background, log/PID ក្នុង logs/)
+./scripts/run_qoder_proxy.sh          # foreground
+./scripts/run_qoder_proxy.sh --bg     # background
+
+# ៣. តេស្ត
+.venv/bin/python scripts/test_qoder_proxy.py   # health + models + chat + 400 cases
+.venv/bin/python scripts/test_ai_engines.py    # គ្រប់ backend + Fallback Chain
+```
+
+`.env`៖
+
+```env
+AI_BACKEND=openai
+OPENAI_BASE_URL=http://127.0.0.1:3000/v1
+OPENAI_API_KEY=sk-qoder-proxy-local
+OPENAI_MODEL=qoder-cli
+AI_TIMEOUT=90
+```
+
+ឈ្មោះ model មិនសំខាន់ទេ (Proxy មិនអើពើ លើកលែងតែកំណត់ `QODER_PROXY_MODEL`)។
+ការកំណត់ Proxy បន្ថែម៖ `QODER_PROXY_HOST` · `QODER_PROXY_PORT` · `QODER_PROXY_TIMEOUT`
+(ត្រូវតិចជាង `AI_TIMEOUT`) · `QODER_PROXY_CONCURRENCY` (ចំនួន CLI ដែលរត់ព្រមគ្នា, លំនាំដើម ២)។
+
+សុវត្ថិភាពរបស់ Proxy៖ prompt ចូលតាម **stdin** (មិនឆ្លង shell, មិនចូល argv) + `--tools ""`
+បិទ tool ទាំងអស់ + `--no-session-persistence` ដូច្នេះសារអតិថិជនមិនអាចឱ្យ CLI កែឯកសារ ឬ
+រត់ command បានទេ។ Log បង្ហាញតែប្រវែងចម្លើយ មិន log prompt ពេញលេញទេ។
 
 ## ៥. រចនាសម្ព័ន្ធ
 

@@ -54,6 +54,9 @@ class Settings:
     fernet_key: str
 
     ai_backend: str
+    groq_api_key: str
+    groq_model: str
+    groq_base_url: str
     qoder_cli_bin: str
     qoder_cli_args: str
     qoder_cli_timeout: int
@@ -92,7 +95,10 @@ def _load() -> Settings:
         use_mock_bot=_bool("USE_MOCK_BOT"),
         database_url=(os.getenv("DATABASE_URL") or "sqlite+aiosqlite:///./data/app.db").strip(),
         fernet_key=(os.getenv("SESSION_FERNET_KEY") or "").strip(),
-        ai_backend=(os.getenv("AI_BACKEND") or "mock").strip().lower(),
+        ai_backend=(os.getenv("AI_BACKEND") or "groq").strip().lower(),
+        groq_api_key=(os.getenv("GROQ_API_KEY") or "").strip(),
+        groq_model=(os.getenv("GROQ_MODEL") or "qwen/qwen3.8-27b").strip(),
+        groq_base_url=(os.getenv("GROQ_BASE_URL") or "https://api.groq.com/openai/v1").strip(),
         qoder_cli_bin=(os.getenv("QODER_CLI_BIN") or "qoder").strip(),
         qoder_cli_args=(os.getenv("QODER_CLI_ARGS") or "-p {prompt}").strip(),
         qoder_cli_timeout=_int("QODER_CLI_TIMEOUT", 90),

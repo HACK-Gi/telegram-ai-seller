@@ -1,6 +1,8 @@
 """Factory — ជ្រើសរើស backend តាម AI_BACKEND ក្នុង .env ហើយរក្សា instance តែមួយ។"""
 from __future__ import annotations
 
+import os
+
 from ai_engine.base import AIEngine, AIError, Turn
 from ai_engine.chain import AIAllFailed, BackendChain, SAFE_REPLY
 from config import settings
@@ -25,6 +27,10 @@ def _build() -> AIEngine:
         from ai_engine.mock import MockEngine
 
         return MockEngine()
+    if backend == "groq":
+        from ai_engine.groq import GroqEngine
+
+        return GroqEngine()
     if backend == "qoder_cli":
         from ai_engine.qoder_cli import QoderCLIEngine
 
@@ -50,15 +56,23 @@ def _build() -> AIEngine:
             model=settings.ollama_model,
             timeout=settings.ai_timeout,
         )
-    raise AIError(f"AI_BACKEND '{backend}' មិនស្គាល់ (mock | qoder_cli | openai | ollama)")
+    raise AIError(f"AI_BACKEND '{backend}' មិនស្គាល់ (mock | groq | qoder_cli | openai | ollama)")
 
 
 def _fallback_engines(primary: AIEngine) -> list[AIEngine]:
-    """Chain fallback ស្វ័យប្រវត្តិ៖ OpenAI-compatible ត្រូវបានបញ្ចូល លុះត្រាតែ primary
-    មិនមែន mock/openai ខ្លួនឯង (AI_BACKEND=mock នៅតែសុទ្ធ ដើម្បីតេស្ត)។"""
+    """Chain fallback ស្វ័យប្រវត្តិ៖ Groq/OpenAI-compat តាមលំដាប់ បញ្ចប់ដោយ mock
+    (AI_BACKEND=mock នៅតែសុទ្ធ ដើម្បីតេស្ត)។"""
     if primary.name == "mock":
         return []
     chain: list[AIEngine] = []
+    # Fallback to Groq if primary is not Groq
+    if primary.name != "groq" and os.getenv("GROQ_API_KEY"):
+        from ai_engine.groq import GroqEngine
+        try:
+            chain.append(GroqEngine())
+        except Exception:
+            pass
+    # Fallback to OpenAI if primary is not OpenAI
     if primary.name != "openai" and settings.openai_base_url:
         from ai_engine.openai_compat import OpenAICompatEngine
 
@@ -70,6 +84,11 @@ def _fallback_engines(primary: AIEngine) -> list[AIEngine]:
                 timeout=settings.ai_timeout,
             )
         )
+    # Last resort: mock — បើគ្រប់ backend ពិតបរាជ័យ កុំឱ្យ Bot ស្ងាត់
+    # (seller.py ជូនដំណឹងម្ចាស់ នៅពេលចម្លើយមកពី mock)។
+    from ai_engine.mock import MockEngine
+
+    chain.append(MockEngine())
     return chain
 
 

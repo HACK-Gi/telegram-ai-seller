@@ -279,7 +279,8 @@ class Seller:
             to_strip -= 1
 
         try:
-            reply = await get_engine().generate(system, [Turn(role, content) for role, content in history], user_text)
+            engine = get_engine()
+            reply = await engine.generate(system, [Turn(role, content) for role, content in history], user_text)
         except AIAllFailed as exc:
             async with db_session() as session:
                 if await crud.notice_once(
@@ -292,6 +293,17 @@ class Seller:
         except AIError as exc:
             await self._notify(f"🤖 AI មានបញ្ហា (គណនី #{self.account_id}): {exc}")
             return None
+
+        if getattr(engine, "last_backend", "") == "mock":
+            # Mock មិនបោះកំហុស ដូច្នេះ AIAllFailed មិនកើត — ត្រូវជូនដំណឹងម្ចាស់ខ្លួនឯង
+            async with db_session() as session:
+                if await crud.notice_once(
+                    session, f"ai-mock:{self.account_id}", bucket=utcnow().strftime("%Y-%m-%dT%H")
+                ):
+                    await self._notify(
+                        f"⚠️ AI ពិតទាំងអស់បរាជ័យ (គណនី #{self.account_id}) — កំពុងឆ្លើយដោយ mock។\n"
+                        f"សូមរត់: ./scripts/run_qoder_proxy.sh"
+                    )
 
         reply = (reply or "").strip()
         if not reply:
