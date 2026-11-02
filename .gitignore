@@ -27,3 +27,7 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+
+# សំណុំរត់ (runtime) — អាចមានសារ/លេខទូរស័ព្ទពិត កុំដាក់ក្នុង git
+run.out
+logs/

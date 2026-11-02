@@ -16,6 +16,7 @@ from ai_engine.chain import SAFE_REPLY
 from ai_engine.prompting import compose_system_prompt, format_catalog
 from database import crud, db_session
 from helpers import esc
+from userbot.safety import describe_error
 
 log = logging.getLogger("admin.prompt")
 router = Router()
@@ -248,14 +249,14 @@ async def run_test(message: Message, question: str) -> None:
         reply = await engine.generate(composed, [], question)
     except AIAllFailed as exc:
         await message.answer(
-            f"⚠️ <b>AI ទាំងអស់បរាជ័យ!</b>\n\n{esc(str(exc))}\n\n"
+            f"⚠️ <b>AI ទាំងអស់បរាជ័យ!</b>\n\n{esc(describe_error(exc))}\n\n"
             f"អតិថិជននឹងទទួលបានសារសុវត្ថិភាព៖ <i>{esc(SAFE_REPLY)}</i>",
             reply_markup=keyboards.ai_test_menu(TEST_CASES),
         )
         return
     except AIError as exc:
-        log.warning("សាកល្បង AI បរាជ័យ: %s", exc)
-        await message.answer(f"⛔ AI បង្ហាញកំហុស ({engine.name}): {esc(str(exc))}")
+        log.warning("សាកល្បង AI បរាជ័យ: %s", describe_error(exc))
+        await message.answer(f"⛔ AI បង្ហាញកំហុស ({engine.name}): {esc(describe_error(exc))}")
         return
     elapsed = time.monotonic() - started
     used = getattr(engine, "last_backend", engine.name)

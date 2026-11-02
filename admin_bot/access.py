@@ -56,5 +56,8 @@ class StaffGate(BaseMiddleware):
             data["scope"] = Scope(admin_id=user_id, is_owner=False, account_ids=account_ids)
             return await handler(event, data)
 
-        log.info("បដិសេធ update ពី user %s (មិនមែន staff)", user_id)
+        log.info(
+            "បដិសេធ update ពី user %s (មិនមែន staff) — បើគេជា Staff ជំនួយ: Panel → 🔐 Admins → ➕ បញ្ចូល ID %s",
+            user_id, user_id,
+        )
         return None

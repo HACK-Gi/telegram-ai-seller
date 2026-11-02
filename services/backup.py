@@ -34,7 +34,7 @@ def _remove_wal_sidecars(path: Path) -> None:
             if sidecar.exists():
                 sidecar.unlink()
         except OSError as exc:
-            log.warning("លុប %s មិនបាន: %s", path.name + suffix, exc)
+            log.warning("លុប %s មិនបាន: %s", path.name + suffix, type(exc).__name__)
 
 
 def _copy_database(source: Path, destination: Path) -> None:
@@ -66,7 +66,7 @@ def prune_backups() -> None:
             stale.unlink()
             log.info("លុប backup ចាស់: %s", stale.name)
         except OSError as exc:
-            log.warning("លុប %s មិនបាន: %s", stale.name, exc)
+            log.warning("លុប %s មិនបាន: %s", stale.name, type(exc).__name__)
 
 
 def validate_sqlite(path: Path) -> str | None:

@@ -23,7 +23,7 @@ from database.models import AccountStatus
 from database.session import db_session
 from helpers import utcnow
 from userbot import limits, text_delay
-from userbot.safety import describe_error
+from userbot.safety import describe_error, mask_phone
 
 log = logging.getLogger("userbot.outbox")
 
@@ -235,7 +235,7 @@ class Outbox:
                 await crud.set_account_pause(session, self.account_id, until)
                 await crud.set_account_status(session, self.account_id, AccountStatus.PAUSED, f"FloodWait {wait}s")
             if wait > 3600:
-                await self._emit(f"🚦 គណនី {account.phone} ជាប់ FloodWait {wait} វិនាទី — ឈប់ផ្ញើរហូតដល់ {until}")
+                await self._emit(f"🚦 គណនី #{account.id} {mask_phone(account.phone)} ជាប់ FloodWait {wait} វិនាទី — ឈប់ផ្ញើរហូតដល់ {until}")
             return
 
         self._items.remove(item)
@@ -260,6 +260,6 @@ class Outbox:
                 return
             await crud.set_account_status(session, self.account_id, AccountStatus.PAUSED, f"limit {budget.reason}")
         await self._emit(
-            f"🪫 គណនី {account.phone} ដល់កម្រិត ({budget.reason}) · {budget.describe()}\n"
+            f"🪫 គណនី #{account.id} {mask_phone(account.phone)} ដល់កម្រិត ({budget.reason}) · {budget.describe()}\n"
             f"សារក្នុងជួរ {self.depth} នឹងផ្ញើបន្តនៅ {budget.blocked_until}"
         )

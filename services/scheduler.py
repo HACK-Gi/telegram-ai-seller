@@ -16,6 +16,7 @@ from database import crud, db_session
 from helpers import esc, local_tz, utcnow
 from services import backup as backup_service
 from services.reports import build_report
+from userbot.safety import describe_error
 
 log = logging.getLogger("services.scheduler")
 
@@ -32,7 +33,7 @@ async def _send_owner(bot: Bot, text: str) -> None:
     try:
         await bot.send_message(chat_id=settings.owner_id, text=text)
     except Exception as exc:  # noqa: BLE001
-        log.warning("មិនអាចផ្ញើសារជូន owner បានទេ: %s", exc)
+        log.warning("មិនអាចផ្ញើសារជូន owner បានទេ: %s", describe_error(exc))
 
 
 async def daily_report(bot: Bot) -> None:

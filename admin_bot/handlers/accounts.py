@@ -20,16 +20,17 @@ from admin_bot.owner_gate import OwnerOnly
 from admin_bot.scope import Scope
 from config import settings
 from database import crud, db_session
-from database.models import Account
+from database.models import Account, AccountStatus
 from helpers import esc
 from sqlalchemy import select, update
-from userbot import credentials
+from userbot import credentials, safety
 from userbot.manager import DEVICE_POOL
 
 router = Router()
 log = logging.getLogger("admin.accounts")
 
 NOT_FOUND = "🚫 រកមិនឃើញគណនីនេះក្នុងវិសាលភាពរបស់អ្នក"
+LIST_ROWS = 20  # បង្ហាញក្នុងសារតែ ២០ កាត (button មានគ្រប់គណនី) — ការពារ Telegram 4096 chars
 
 
 HOWTO = (
@@ -134,21 +135,38 @@ async def guard_account(callback: CallbackQuery, account_id: int, scope: Scope) 
 async def show_list(event: CallbackQuery | Message, scope: Scope) -> None:
     async with db_session() as session:
         accounts = await crud.list_accounts(session, owner_admin_id=scope.owner_id)
-    header = "📱 <b>គណនី Telegram</b>\n"
     if not accounts:
-        header += (
-            "\n<i>មិនទាន់មានគណនី — ចុច ➕ បន័ែមគណនី ឬ <code>/addsession</code></i>"
+        header = (
+            "📱 <b>គណនី Telegram</b>\n\n"
+            "🗂 <i>មិនទាន់មានគណនី — ចុច ➕ បន័ែមគណនី (Session String) ឬវាយ <code>/addsession</code></i>\n"
+            "💡 បន្ថែមបានគ្មានកំណត់ រាល់គណនីមាន AI + outbox ផ្ទាល់ខ្លួន"
             if scope.is_owner
-            else "\n<i>មិនទាន់មានគណនីក្នុងវិសាលភាពរបស់អ្នក — login គណនីរបស់អ្នក ឬសុំ Owner ប្ដូរម្ចាស់គណនី</i>"
+            else "📱 <b>គណនី Telegram</b>\n\n"
+            "🗂 <i>មិនទាន់មានគណនីក្នុងវិសាលភាពរបស់អ្នក — login គណនីរបស់អ្នក ឬសុំ Owner ប្ដូរម្ចាស់គណនី</i>"
         )
     else:
-        header += f"\nសរុប {len(accounts)} · ⭐ = Primary (គណនីដែល AI ប្រើឆ្លើយតប)"
+        counts: dict[str, int] = {}
+        for item in accounts:
+            counts[item.status] = counts.get(item.status, 0) + 1
+        badges = "  ".join(
+            f"{AccountStatus.LABELS.get(key, key)}×{value}" for key, value in sorted(counts.items())
+        )
+        shown = accounts[:LIST_ROWS]
+        rows = "\n".join(render.account_row(item, index) for index, item in enumerate(shown, 1))
+        header = (
+            "📱 <b>គណនី Telegram</b>\n\n"
+            f"🗂 សរុប <b>{len(accounts)}</b> គណនី (គ្មានកំណត់) · ⭐ Primary = គណនីដែល AI ប្រើឆ្លើយ\n"
+            f"{badges}\n\n{rows}"
+        )
+        if len(accounts) > len(shown):
+            header += f"\n\n<i>… មានទៀត {len(accounts) - len(shown)} គណនី — ចុចប៊ូតុងខាងក្រោម</i>"
+        header += "\n\n👉 ចុចគណនីមួយ ដើម្បីមើល/AI on/off/បើក-បិទ Userbot"
     markup = keyboards.accounts_menu(accounts, scope)
     if isinstance(event, CallbackQuery):
         if event.message is None:
             await event.answer()
             return
-        await event.message.edit_text(header, reply_markup=markup)
+        await render.safe_edit(event.message, header, markup)
         await event.answer()
     else:
         await event.answer(header, reply_markup=markup)
@@ -161,9 +179,7 @@ async def show_account(callback: CallbackQuery, account_id: int, scope: Scope, t
     if callback.message is None:
         await callback.answer(toast)
         return
-    await callback.message.edit_text(
-        render.account_card(account), reply_markup=keyboards.account_actions(account, scope)
-    )
+    await render.safe_edit(callback.message, render.account_card(account), keyboards.account_actions(account, scope))
     await callback.answer(toast)
 
 
@@ -178,11 +194,8 @@ async def cb_howto(callback: CallbackQuery, scope: Scope) -> None:
     if callback.message is None:
         await callback.answer()
         return
-    await callback.message.edit_text(
-        HOWTO + _session_web_hint("html"),
-        reply_markup=keyboards.accounts_menu([], scope),
-        parse_mode="HTML",
-        disable_web_page_preview=True,
+    await render.safe_edit(
+        callback.message, HOWTO + _session_web_hint("html"), keyboards.accounts_menu([], scope)
     )
     await callback.answer()
 
@@ -254,28 +267,27 @@ async def cmd_add_account(message: Message, command: CommandObject, state: FSMCo
 
 @router.message(Command("addsession"))
 async def cmd_add_session(message: Message, state: FSMContext, scope: Scope) -> None:
-    """បន្ថែមគណនីតាម Session String — គេចពី OTP Block ពី Telegram។"""
+    """បន័ែមគណនីតាម Session String — គេចពី OTP Block ពី Telegram។"""
     await state.set_state(LoginStates.waiting_session)
     await message.answer(
-        "🔐 **បន្ថែមគណនីតាម Session String**\n\n"
-        "ដើម្បីទទួលបាន Session String របស់ Telegram (ជាកូដអក្សរមួយជួរវែងសម្រាប់ប្រើប្រាស់ជាមួយបណ្ណាល័យកូដដូចជា Telethon, GramJS, ឬ Pyrogram) អ្នកត្រូវធ្វើតាម ២ ជំហានធំៗខាងក្រោមនេះ៖\n\n"
-        "**ជំហានទី ១៖ យក API ID និង API Hash**\n"
-        "មុននឹងអាចបង្កើត Session String បាន អ្នកត្រូវចុះឈ្មោះយកលេខសម្គាល់គណនីអ្នកអភិវឌ្ឍន៍ (Developer) ពី Telegram ជាមុនសិន៖\n"
-        "1. ចូលទៅកាន់គេហទំព័រផ្លូវការ [Telegram Development Tools](https://my.telegram.org/apps) រួចវាយបញ្ចូលលេខទូរស័ព្ទគណនី Telegram របស់អ្នក។\n"
-        "2. វាយបញ្ចូលកូដផ្ទៀងផ្ទាត់ដែល Telegram ផ្ញើទៅក្នុងកម្មវិធីរបស់អ្នក។\n"
-        "3. ជ្រើសរើសយក **API development tools**។\n"
-        "4. បង្កើតកម្មវិធីថ្មីមួយ (ត្រង់ App title និង Short name អ្នកអាចបំពេញឈ្មោះអ្វីក៏បានតាមចិត្ត)។\n"
-        "5. ចម្លង (Copy) ទុក **API ID** និង **API Hash** របស់អ្នក (សូមរក្សាវាជាការសម្ងាត់បំផុត)។\n\n"
-        "**ជំហានទី ២៖ បង្កើត Session String**\n"
-        "យក API ID និង API Hash ដែលអ្នកទើបបានមកបំពេញក្នុងឧបករណ៍បង្កើត Session String ដើម្បីទទួលបានកូដវែងនោះ។"
-        + _session_web_hint("markdown")
+        "🔐 <b>បន្ថែមគណនីតាម Session String</b>\n\n"
+        "<i>Session String ជាកូដវែងមួយជួរ (~៣៥២ តួអក្សរ) ដែលប្រើជំនួស OTP ហើយ"
+        "ភ្ជាប់បានគ្មានកំណត់ចំនួនគណនី។</i>\n\n"
+        "<b>ជំហានទី ១ — យក API ID + API Hash</b>\n"
+        "១. បើក <a href=\"https://my.telegram.org/apps\">my.telegram.org/apps</a> រួចវាយលេខទូរស័ព្ទគណនីរបស់អ្នក\n"
+        "២. វាយកូដផ្ទៀងផ្ទាត់ដែល Telegram ផ្ញើចូល App របស់អ្នក\n"
+        "៣. ជ្រើស <b>API development tools</b> ហើយបង្កើត App ថ្មីមួយ (App title/Short name ដាក់ឈ្មោះអ្វីក៏បាន)\n"
+        "៤. ចម្លង <b>API ID</b> និង <b>API Hash</b> ទុក — <b>api_hash មិនដែលវាយតាម chat ទេ</b>\n\n"
+        "<b>ជំហានទី ២ — បង្កើត Session String</b>\n"
+        "• តាម terminal លើកុំព្យូទ័ររបស់អ្នក: <code>python scripts/get_session.py +855XXXXXXXX</code> (OTP វាយក្នុង terminal ខ្លួនឯង)\n"
+        "• ឬតាម Web App (ងាយស្រួលជាង) ខាងក្រោម"
+        + _session_web_hint("html")
         + "\n\n"
-        "📤 **បន្ទាប់មក សូមផ្ញើ Session String នោះមកទីនេះភ្លាម។**\n\n"
-        "⚠️ **សារនេះនឹងត្រូវលុបភ្លាម បន្ទាប់ពីអាន**\n"
-        "🔒 **Session String នឹងត្រូវ Encrypt + Save ក្នុង DB ដោយស្វ័យប្រវត្តិ**\n\n"
-        "ឬផ្ញើ /cancel ដើម្បីបោះបង់",
-        parse_mode="Markdown",
-        disable_web_page_preview=True
+        "📤 <b>បន្ទាប់មក ចម្លង Session String មកផ្ញើជាសារមួយនៅទីនេះភ្លាម។</b>\n\n"
+        "🗑 <b>សារនេះនឹងត្រូវលុបភ្លាម</b> បន្ទាប់ពី Bot អាន ទើប code មិនសល់ក្នុង history\n"
+        "🔒 Session String នឹងត្រូវ <b>Encrypt + Save</b> ក្នុង DB (Fernet) ដោយស្វ័យប្រវត្តិ\n"
+        "📱 បន្ថែមគណនីបន្ទាប់ → វាយ <code>/addsession</code> ម្តងទៀត (គ្មានកំណត់)\n"
+        "ℹ️ បោះបង់គ្រប់ពេល → <code>/cancel</code>",
     )
 
 
@@ -366,24 +378,29 @@ async def md_login_session(message: Message, state: FSMContext, scope: Scope) ->
             return
 
         # Encrypt session string
-        from userbot import session_store, safety
+        from userbot import session_store
 
         safety.register_secret(session_string)
         token = session_store.encrypt(session_string)
-        fp = session_store.fingerprint(session_string)
 
-        # Save to DB
+        # Save to DB — គន្លឹះពិតប្រាកដរបស់គណនីគឺ `telegram_user_id` (me.id) មិនមែន
+        # លេខទូរស័ព្ទទេ។ លេខទូរស័ព្ទអាច None (Telegram privacy) ខណៈជួង `phone` ជា
+        # NOT NULL + UNIQUE — បើរក្សាទុក None គណនីទី២ នឹងបែកជា IntegrityError
+        # ហើយ «bot ប្រើបានតែគណនីតែមួយ»។ `account_phone_key` ធានាតម្លៃមិនទទេ មិនបុកគ្នា។
+        phone_key = safety.account_phone_key(me.phone, me.id)
+        display = " ".join(filter(None, (me.first_name, me.last_name))).strip()
         async with db_session() as session:
-            # Check if phone already exists
             existing = await session.scalar(
-                select(Account).where(Account.phone == me.phone)
+                select(Account).where(
+                    (Account.telegram_user_id == me.id) | (Account.phone == phone_key)
+                )
             )
             if existing is not None:
                 if existing.owner_admin_id is not None and existing.owner_admin_id != scope.admin_id:
                     await client.disconnect()
                     await state.set_state(None)
                     await message.answer(
-                        "🚫 លេខនេះជាគណនីរបស់ admin ផ្សេងហើយ — សុំ Owner ប្ដូរម្ចាស់គណនី",
+                        "🚫 គណនីនេះជាគណនីរបស់ admin ផ្សេងហើយ — សុំ Owner ប្ដូរម្ចាស់គណនី",
                         reply_markup=keyboards.main_menu(scope.is_owner),
                     )
                     return
@@ -394,18 +411,27 @@ async def md_login_session(message: Message, state: FSMContext, scope: Scope) ->
                     update(Account)
                     .where(Account.id == existing.id)
                     .values(
+                        phone=phone_key,
                         session_encrypted=token,
                         device_index=device_index,
                         name=f"{me.first_name or ''} {me.last_name or ''}".strip(),
                     )
                 )
+                await crud.record_account_identity(
+                    session,
+                    existing.id,
+                    telegram_user_id=me.id,
+                    username=me.username or "",
+                    display_name=display,
+                )
                 account_id = existing.id
+                reused = True
             else:
                 # Create new
                 device_index = randbelow(len(DEVICE_POOL))
                 account = await crud.create_account(
                     session,
-                    phone=me.phone,
+                    phone=phone_key,
                     session_encrypted=token,
                     name=f"{me.first_name or ''} {me.last_name or ''}".strip(),
                     owner_admin_id=scope.admin_id,
@@ -417,9 +443,10 @@ async def md_login_session(message: Message, state: FSMContext, scope: Scope) ->
                     account.id,
                     telegram_user_id=me.id,
                     username=me.username or "",
-                    display_name=" ".join(filter(None, (me.first_name, me.last_name))),
+                    display_name=display,
                 )
                 account_id = account.id
+                reused = False
 
         await client.disconnect()
         await state.set_state(None)
@@ -431,19 +458,28 @@ async def md_login_session(message: Message, state: FSMContext, scope: Scope) ->
         if manager is not None:
             try:
                 await manager.reconcile()
-            except Exception as exc:
-                log.warning("reconcile ក្រោយ addsession មិនបាន: %s", exc)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("reconcile ក្រោយ addsession មិនបាន: %s", type(exc).__name__)
 
+        total = 0
+        async with db_session() as session:
+            total = len(await crud.list_accounts(session, owner_admin_id=scope.owner_id))
         await message.answer(
-            f"✅ ភ្ជាប់រួច — គណនី <code>#{account_id}</code> · fp={fp}\n"
-            f"👤 {me.first_name or ''} {me.last_name or ''}\n"
-            f"📞 {me.phone}\n"
-            "🔒 session string រក្សាទុក Fernet ក្នុង DB តែប៉ុណ្ណោះ មិនដែលចូល chat ឬ log ទេ។",
+            "✅ ភ្ជាប់រួច — <b>គណនី Telegram</b>\n\n"
+            f"📱 គណនី <code>#{account_id}</code> · "
+            + ("♻️ បង្វិល session លើគណនីចាស់" if reused else "🆕 បន័ែមគណនីថ្មី")
+            + "\n"
+            f"👤 {esc(display or '—')}\n"
+            f"📞 {esc(safety.mask_phone(phone_key))} · 🆔 <code>{me.id}</code>\n"
+            "🔐 <b>Session:</b> ✅ Configured (Fernet ក្នុង DB)\n"
+            f"🗂 គណនីសរុបក្នុងវិសាលភាពរបស់អ្នក: <b>{total}</b>\n\n"
+            "🔒 Userbot ភ្ជាប់ក្នុង ៦០ វិនាទី (hot-reload គ្មាន restart)។\n"
+            "🛡 Session string មិនដែលចូល chat ឬ log ទេ។",
             reply_markup=keyboards.main_menu(scope.is_owner),
         )
 
     except Exception as exc:
-        log.error("addsession error: %s", exc, exc_info=True)
+        log.error("addsession បរាជ័យ: %s", safety.describe_error(exc))
         await state.set_state(None)
         await message.answer(
             f"❌ បរាជ័យ: {type(exc).__name__} — សូមសាកល្បងឡើងវិញ",
@@ -512,10 +548,11 @@ async def cb_ask_owner(callback: CallbackQuery, scope: Scope) -> None:
         return
     async with db_session() as session:
         admins = await crud.list_admins(session)
-    await callback.message.edit_text(
-        f"🔀 ប្ដូរម្ចាស់គណនី <code>#{account_id}</code> ({esc(account.phone)}) →\n"
+    await render.safe_edit(
+        callback.message,
+        f"🔀 <b>ប្ដូរម្ចាស់គណនី</b> <code>#{account_id}</code> · {esc(account.display_label())}\n\n"
         "<i>ទិន្នន័យដែល derive ពីគណនីនេះ (ផលិតផល/QR ដែលភ្ជាប់) នឹងតាមម្ចាស់ថ្មីទៅដោយ។</i>",
-        reply_markup=keyboards.owner_picker(account, admins),
+        keyboards.owner_picker(account, admins),
     )
     await callback.answer()
 
@@ -541,11 +578,12 @@ async def cb_ask_delete(callback: CallbackQuery, scope: Scope) -> None:
     account = await guard_account(callback, account_id, scope)
     if account is None or callback.message is None:
         return
-    await callback.message.edit_text(
-        f"🗑 លុបគណនី <b>{esc(account.phone)}</b> <code>#{account.id}</code>?\n\n"
+    await render.safe_edit(
+        callback.message,
+        f"🗑 <b>លុបគណនី?</b> · {esc(account.display_label())} <code>#{account.id}</code>\n\n"
         "<i>Session string ត្រូវលុបចេញពី DB និង session file ក្នុង media/session។ "
         "ប្រវត្តិ Order/Customer ចាស់ នៅរក្សាទុកជា snapshot។</i>",
-        reply_markup=keyboards.confirm_action(f"លុប #{account_id}", f"acc:del:{account_id}"),
+        keyboards.confirm_action(f"លុប #{account_id}", f"acc:del:{account_id}"),
     )
     await callback.answer()
 
@@ -558,7 +596,7 @@ async def cb_delete(callback: CallbackQuery, scope: Scope) -> None:
         return
     async with db_session() as session:
         account = await crud.get_account(session, account_id, owner_admin_id=scope.owner_id)
-        phone = account.phone if account else ""
+        label = account.display_label() if account else ""
         was_primary = bool(account and account.is_primary)
         await crud.delete_account(session, account_id)
         accounts = await crud.list_accounts(session, owner_admin_id=scope.owner_id)
@@ -567,9 +605,10 @@ async def cb_delete(callback: CallbackQuery, scope: Scope) -> None:
     if callback.message is None:
         await callback.answer()
         return
-    await callback.message.edit_text(
-        f"🗑 បានលុបគណនី <code>{esc(phone)}</code>",
-        reply_markup=keyboards.accounts_menu(accounts, scope),
+    await render.safe_edit(
+        callback.message,
+        f"🗑 <b>បានលុបគណនី</b> {esc(label)} <code>#{account_id}</code> រួចរាល់",
+        keyboards.accounts_menu(accounts, scope),
     )
     await callback.answer()
 

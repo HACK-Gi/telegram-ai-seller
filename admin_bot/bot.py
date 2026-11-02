@@ -6,12 +6,12 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import ErrorEvent
 
 from admin_bot.access import StaffGate
 from admin_bot.handlers import all_routers
 from admin_bot.mock import MockSession
-from config import settings
 from config import settings
 
 log = logging.getLogger("admin.bot")
@@ -47,10 +47,24 @@ def build_dispatcher() -> Dispatcher:
 async def on_error(event: ErrorEvent) -> bool:
     """កុំឱ្យ កំហុសតែមួយ បិទ Panel ទាំងមូល — បង្ហាញសារសាមញ្យ ជូន owner។
 
-    មិនដែលបង្ហាញ `str(exception)` ទេ ព្រោះ repr របស់ Telethon/aiogram បញ្ចូលទាំង
-    អត្ថបទសារ និងលេខទូរស័ព្ទ/OTP ដែលកំពុង Flow login ក្នុង chat នេះ។
+    Log តែ *ឈ្មោះ* class (+ លេខ code/seconds បើមាន) ប៉ុណ្ណោះ មិនដែលបង្ហាញ
+    `str(exception)` ទេ ព្រោះ repr របស់ Telethon/aiogram បញ្ចូលទាំង អត្ថបទសារ
+    និងលេខទូរស័ព្ទ/OTP ដែលកំពុង flow login ក្នុង chat នេះ។
     """
-    log.exception("កំហុសក្នុង update: %s", event.exception)
+    from userbot.safety import describe_error
+
+    exc = event.exception
+    # «message is not modified» = ចុចប៊ូតុងដដែល ២ ដង មិនមែនកំហុសទេ (កុំបង្កជារាយការណ៍)
+    if isinstance(exc, TelegramBadRequest) and "not modified" in str(exc):
+        log.debug("edit មិនប្តូរអ្វី — រំលង")
+        return True
+
+    log.error("កំហុសក្នុង update: %s", describe_error(event.exception))
+    cause = getattr(event.exception, "__cause__", None)
+    if cause is not None:
+        log.error("  ប្រភព: %s", describe_error(cause))
+    # Traceback មានតែពេល owner បើក LOG_LEVEL=debug — វាឆ្លង SecretRedactor ដូចគ្នា
+    log.debug("កំហុសក្នុង update (traceback)", exc_info=event.exception)
     if event.update.message is not None and not is_mock():
         try:
             await event.update.message.answer("⛔ មានកំហុសបន្តិច — សូមព្យាយាមម្ដងទៀត ឬវាយ /menu")

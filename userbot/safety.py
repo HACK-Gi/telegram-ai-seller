@@ -70,6 +70,47 @@ def describe_error(exc: BaseException) -> str:
     return " ".join(parts)
 
 
+# ---------- លេខទូរស័ព្ទ៖ គន្លឹះ DB ទេ ហើយមិនដែលបង្ហាញទាំងមូលទេ ----------
+# `get_me().phone` អាចជា None (គណនីបិទ «Who can see my phone number») ខណៈជួង
+# `telegram_accounts.phone` ជា NOT NULL + UNIQUE — ដូច្នេះគណនីទី២ ដែលគ្មានលេខ
+# នឹងបុក constraint ហើយ fail ជា `IntegrityError`។ ចំណាំថាគន្លឹះពិតប្រាកដរបស់
+# Telegram គឺ `telegram_user_id` មិនមែនលេខទូរស័ព្ទទេ។
+ANON_PHONE_PREFIX = "tg:"
+
+
+def account_phone_key(phone: object, telegram_user_id: int | None) -> str:
+    """តម្លៃសម្រាប់ជួង `phone` — មិនដែលទទេ ហើយមិនដែលបុកគ្នារវាងគណនីពីរ។
+
+    គ្មានលេខទូរស័ព្ទពី Telegram → `tg:<telegram_user_id>` (តែមួយគត់ ព្រោះ ID តែមួយគត់)។
+    """
+    text = str(phone or "").strip()
+    if text:
+        return text
+    if telegram_user_id is None:
+        raise ValueError("គ្មាន phone និងគ្មាន telegram_user_id")
+    return f"{ANON_PHONE_PREFIX}{int(telegram_user_id)}"
+
+
+def is_anon_phone(phone: object) -> bool:
+    """ពិត = តម្លៃ `tg:<id>` ដែល `account_phone_key` បង្កើត មិនមែនលេខទូរស័ព្ទពិតទេ។"""
+    return str(phone or "").startswith(ANON_PHONE_PREFIX)
+
+
+def mask_phone(phone: object) -> str:
+    """`+85593251670` → `+855****1670` — ប្រើក្នុង log និងសារ Panel ជានិច្ច។
+
+    លេខខ្លី ឬ placeholder `tg:<id>` → បិទកึ่งៗដែរ កុំឱ្យ Panel បង្ហាញអត្តសញ្ញាណពេញលេញ។
+    """
+    text = str(phone or "").strip()
+    if not text:
+        return "—"
+    if is_anon_phone(text):
+        return f"{ANON_PHONE_PREFIX}****{text[-4:]}" if len(text) > 8 else "*" * len(text)
+    if len(text) <= 8:
+        return "*" * len(text)
+    return f"{text[:4]}****{text[-4:]}"
+
+
 _PRICE_RE = re.compile(r"[$€៛]?\s?\d[\d,]*\.\d{2}")
 # លេខទូរស័ព្ទខ្មែរ ៩–១១ ខ្ទង់ (word boundary ការពារកុំឱ្យវាច្របាច់ប្រាក់ run វែងជាងនេះ)
 _PHONE_RE = re.compile(r"\+?\b0?\d{9,11}\b")

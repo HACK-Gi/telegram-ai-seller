@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 
@@ -40,6 +41,41 @@ DELIVERY_TEMPLATE = (
     "📦 {product} × {quantity} · {total}\n\n"
     "សូមប្រើឱ្យបានចំណេញបង 🙏"
 )
+
+TELEGRAM_TEXT_LIMIT = 4096
+
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*|__(.+?)__", re.S)
+_CODE_BLOCK_RE = re.compile(r"```[a-zA-Z0-9_+-]*\n?(.*?)```", re.S)
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*", re.M)
+_BULLET_RE = re.compile(r"^\s*[-*•]\s+", re.M)
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+_BLANK_RE = re.compile(r"\n{3,}")
+
+
+def format_ai_reply(text: str) -> str:
+    """សម្អាងឆ្លើយតប AI ឱ្យស្អាតលើ Telegram — អក្សររាវទាំងស្រុង (parse_mode=None)។
+
+    Model ច្រើនបង្ហាញ Markdown (`**bold**`, `###`, `- item`) ខណៈសារដែលផ្ញើទៅអតិថិជន
+    គ្មាន parse_mode ទេ ដូច្នេះសញ្ញាទាំងនោះនឹងចេញជាអក្សរដាច់ៗ (អាប់សារអាក្រក់)។
+    យើងបម្លែងវាទៅទ្រង់ទ្រាយដែលអានស្អាតតែម្តង ហើយកាត់ឱ្យតែង បើវែងជាង Telegram អនុញ្ញាត។
+    """
+    body = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not body:
+        return ""
+    body = _CODE_BLOCK_RE.sub(lambda m: m.group(1).rstrip(), body)
+    body = _INLINE_CODE_RE.sub(lambda m: m.group(1), body)
+    body = _BOLD_RE.sub(lambda m: (m.group(1) or m.group(2) or "").strip(), body)
+    body = _LINK_RE.sub(lambda m: f"{m.group(1).strip()} · {m.group(2)}", body)
+    body = _HEADING_RE.sub("• ", body)
+    body = _BULLET_RE.sub("• ", body)
+    body = _BLANK_RE.sub("\n\n", body)
+    if len(body) > TELEGRAM_TEXT_LIMIT:
+        cut = body[: TELEGRAM_TEXT_LIMIT - 20]
+        boundary = max(cut.rfind("\n"), cut.rfind(" "))
+        body = (cut[:boundary] if boundary > 0 else cut).rstrip() + " …"
+    return body
+
 
 
 class Seller:
@@ -87,8 +123,9 @@ class Seller:
             status = await self.handle_inbound(peer_id, text, access_hash=access_hash)
             if status == "bound" and self.catalog is not None:
                 await self.catalog.send_welcome(peer_id, access_hash)  # ទំនាក់ទំនងដំបូង = សួស្តី + សម្ភារៈ
-        except Exception:  # noqa: BLE001
-            log.exception("seller កំហុសគណនី %s", self.account_id)
+        except Exception as exc:  # noqa: BLE001
+            log.error("seller កំហុសគណនី #%s: %s", self.account_id, safety.describe_error(exc))
+            log.debug("seller traceback", exc_info=True)
 
     @staticmethod
     async def _classify_media(event) -> str | None:
@@ -280,6 +317,11 @@ class Seller:
 
         try:
             engine = get_engine()
+            # វាស់វែងតែចំនួនតួអក្សរ — មិនដែល log ខ្លឹមសារ prompt ទេ
+            log.debug(
+                "AI call · គណនី #%s · system=%d · history=%d msgs · user=%d chars",
+                self.account_id, len(system), len(history), len(user_text),
+            )
             reply = await engine.generate(system, [Turn(role, content) for role, content in history], user_text)
         except AIAllFailed as exc:
             async with db_session() as session:
@@ -287,11 +329,12 @@ class Seller:
                     session, f"ai:{self.account_id}", bucket=utcnow().strftime("%Y-%m-%dT%H")
                 ):
                     await self._notify(
-                        f"⚠️ AI ទាំងអស់បរាជ័យ! (គណនី #{self.account_id})\n{exc}"
+                        f"⚠️ AI ទាំងអស់បរាជ័យ! (គណនី #{self.account_id})\n"
+                        f"{type(exc).__name__} — ពិនិត្យ AI_BACKEND និង API key ក្នុង .env"
                     )
             return SAFE_REPLY
         except AIError as exc:
-            await self._notify(f"🤖 AI មានបញ្ហា (គណនី #{self.account_id}): {exc}")
+            await self._notify(f"🤖 AI មានបញ្ហា (គណនី #{self.account_id}): {type(exc).__name__}")
             return None
 
         if getattr(engine, "last_backend", "") == "mock":
@@ -305,7 +348,7 @@ class Seller:
                         f"សូមរត់: ./scripts/run_qoder_proxy.sh"
                     )
 
-        reply = (reply or "").strip()
+        reply = format_ai_reply((reply or "").strip())
         if not reply:
             return None
         safe_terms = tuple(p.name for p in products)
@@ -343,8 +386,9 @@ class Seller:
                 await self.deliver_pending()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001
-                log.exception("delivery sweep កំហុសគណនី %s", self.account_id)
+            except Exception as exc:  # noqa: BLE001
+                log.error("delivery sweep កំហុសគណនី #%s: %s", self.account_id, safety.describe_error(exc))
+                log.debug("delivery sweep traceback", exc_info=True)
             await asyncio.sleep(SWEEP_INTERVAL)
 
     async def deliver_pending(self) -> int:

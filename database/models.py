@@ -274,6 +274,23 @@ class Account(Base):
     tg_api_id_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     tg_api_hash_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    def display_label(self) -> str:
+        """ស្លាកមិត្តភាពសម្រាប់ Panel/log — ឈ្មោះម្ចាស់ → ឈ្មោះ Telegram → @username → លេខបិទ។
+
+        មិនដែលត្រឡប់លេខទូរស័ព្ទពេញលេញទេ ទោះជាអ្នកមើលជាម្ចាស់គណនីខ្លួនឯង ព្រោះ
+        Panel មាន log + backup និងគណនីអាចគ្មានលេខពី Telegram (`tg:<id>` placeholder)។
+        """
+        from userbot import safety
+
+        for candidate in (self.name, self.display_name):
+            text = (candidate or "").strip()
+            if text:
+                return text
+        username = (self.username or "").strip()
+        if username:
+            return f"@{username}"
+        return safety.mask_phone(self.phone)
+
 
 class AccountProduct(Base):
     """វិសាលភាពផលិតផលក្នុងមួយគណនី។ **គ្មាន row = លក់គ្រប់ផលិតផល active**។"""

@@ -221,7 +221,7 @@ async def cb_backup(callback: CallbackQuery) -> None:
     try:
         path = await backup_service.create_backup("manual")
     except OSError as exc:
-        log.error("backup បរាជ័យ: %s", exc)
+        log.error("backup បរាជ័យ: %s", type(exc).__name__)
         if callback.message is not None:
             await callback.message.answer(f"⛔ Backup បរាជ័យ: {esc(exc)}")
         return
@@ -286,7 +286,7 @@ async def cb_restore_apply(callback: CallbackQuery, state: FSMContext) -> None:
     try:
         safety = await backup_service.apply_restore(Path(pending))
     except (OSError, ValueError) as exc:
-        log.error("restore បរាជ័យ: %s", exc)
+        log.error("restore បរាជ័យ: %s", type(exc).__name__)
         await state.set_state(None)
         if callback.message is not None:
             await callback.message.edit_text(f"⛔ Restore បរាជ័យ: {esc(exc)}")

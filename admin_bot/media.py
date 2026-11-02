@@ -12,6 +12,7 @@ from aiogram import Bot
 from aiogram.types import Message
 
 from helpers import esc
+from userbot.safety import describe_error
 
 log = logging.getLogger("admin.media")
 
@@ -38,5 +39,5 @@ async def send_photo_to_admin(bot: Bot, chat_id: int, file_id: str, caption: str
     try:
         await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
     except Exception as exc:  # TelegramAPIError / រូបបាត់
-        log.warning("មិនអាចផ្ញើរូប %s បាន: %s", file_id[:16], exc)
+        log.warning("មិនអាចផ្ញើរូប %s បាន: %s", file_id[:16], describe_error(exc))
         await bot.send_message(chat_id=chat_id, text=f"⚠️ រូបភាពមិនអាចបើកបានទេ ({esc(caption)})")

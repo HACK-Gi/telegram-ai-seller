@@ -30,13 +30,19 @@ def pager(prefix: str, page: int, pages: int) -> list[tuple[str, str]]:
 
 
 BACK_MAIN = ("🏠 ត្រឡប់មេនុសំខាន់", "menu:main")
+BUTTON_ROWS = 40  # Telegram កំណត់ ១០០ button ក្នុង keyboard មួយ — ទុកទីតាំងសម្រាប់ជួរផ្សេង
 
 
 def main_menu(is_owner: bool) -> InlineKeyboardMarkup:
+    """មេនុសំខាន់ — ដាក់ «គណនី + បន័ែមគណនី» ជាជួរលើកដំបូង ព្រោះវាជាចំណុចចាប់ផ្តើមលក់។
+
+    ប៊ូតុងទាំងអស់ប្រើ callback_data ចាស់ដដែល (`menu:*`, `acc:addsession`) ដូច្នេះ
+    handler ទាំងអស់នៅដំណើរការឥតប្តូរ។
+    """
     rows = [
-        [("📦 ផលិតផល", "menu:products"), ("💳 QR Code", "menu:qr")],
-        [("📦 ប្រភេទអីវ៉ាន់", "menu:categories")],
-        [("🧠 System Prompt", "menu:prompt"), ("📱 គណនី Telegram", "menu:accounts")],
+        [("📱 គណនី Telegram", "menu:accounts"), ("➕ បន័ែមគណនី", "acc:addsession")],
+        [("📦 ផលិតផល", "menu:products"), ("🏷 ប្រភេទអីវ៉ាន់", "menu:categories")],
+        [("💳 QR Code", "menu:qr"), ("🧠 System Prompt", "menu:prompt")],
         [("🛒 Orders", "menu:orders"), ("👥 អតិថិជន", "menu:customers")],
         [("📊 Analytics", "menu:analytics")],
     ]
@@ -294,18 +300,26 @@ def customer_actions(customer: Customer) -> InlineKeyboardMarkup:
 
 
 def accounts_menu(accounts: Sequence[Account], scope: "Scope | None" = None) -> InlineKeyboardMarkup:
+    """បញ្ជីគណនីជា «កាតលេខ» មួយជួរឈរមួយគណនី — គ្មានកំណត់ចំនួន រហូតដល់ ៩៩៦ button/callback។
+
+    លេខទូរស័ព្ទត្រូវបិទកណ្តាល (ប្រើ `display_label()`) ទោះក្នុង button តូចៗ។
+    """
     icons = {"active": "🟢", "offline": "⚪", "paused": "🟡", "banned": "🔴"}
+    shown = accounts[:BUTTON_ROWS]
     rows = [
         [
             (
-                f"{icons.get(item.status, '⚪')} {esc(item.phone)}" + (" ⭐" if item.is_primary else "") + f" · {AccountStatus.LABELS.get(item.status, item.status)}"
-                + ("" if item.enabled else " · 🔒"),
+                f"{index}. {icons.get(item.status, '⚪')} #{item.id} {esc(item.display_label())}"
+                + (" ⭐" if item.is_primary else "")
+                + ("" if item.enabled else " 🔒"),
                 f"acc:view:{item.id}",
             )
         ]
-        for item in accounts
+        for index, item in enumerate(shown, 1)
     ]
-    rows.append([("🔐 បន្ថែមគណនីតាម Session String", "acc:addsession")])
+    if len(accounts) > len(shown):
+        rows.append([(f"… មានទៀត {len(accounts) - len(shown)} គណនី · មើលបញ្ជីខាងលើ", "noop:more")])
+    rows.append([("➕ បន័ែមគណនី (Session String)", "acc:addsession")])
     rows.append([("ℹ️ របៀបបន័ែមគណនី", "acc:howto")])
     rows.append([BACK_MAIN])
     return build(rows)

@@ -19,11 +19,13 @@ API_HASH_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
 def mask_phone(phone: str) -> str:
-    """`+85593251670` → `+855****5670` — សម្រាប់ log និងសារជូនដំណឹងប៉ុណ្ណោះ។"""
-    text = (phone or "").strip()
-    if len(text) <= 8:
-        return "*" * len(text)
-    return f"{text[:4]}****{text[-4:]}"
+    """`+85593251670` → `+855****1670` — សម្រាប់ log និងសារជូនដំណឹងប៉ុណ្ណោះ។
+
+    ប្រតិបត្តិការពិតនៅ `userbot.safety.mask_phone` (canonical) — នេះជា alias ចាស់។
+    """
+    from userbot import safety
+
+    return safety.mask_phone(phone)
 
 
 def env_credentials() -> tuple[int, str] | None:

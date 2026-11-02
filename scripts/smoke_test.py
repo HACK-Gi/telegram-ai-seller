@@ -130,6 +130,8 @@ API_HASH_ENV = "0123456789abcdef0123456789abcdef"
 SESSION_A = "1" + "A" * 249
 SESSION_B = "2" + "B" * 249
 LOGIN_PHONE = "+85512777000"
+from userbot.safety import mask_phone as _mask  # noqa: E402
+MASKED_PHONE = _mask(LOGIN_PHONE)  # Panel/log បង្ហាញតែទ្រង់ទ្រាយបិទកណ្តាល
 
 
 class AuthKeyUnregisteredError(Exception):
@@ -594,7 +596,7 @@ async def main() -> int:
 
     mark = panel.mark()
     await panel.msg("/accounts", user_id=STAFF)
-    expect("staff ឃើញគណនីខ្លួន", panel.said_since(mark, STAFF_PHONE))
+    expect("staff ឃើញគណនីខ្លួន (លេខបិទកណ្តាល)", panel.said_since(mark, _mask(STAFF_PHONE)))
     expect("staff មិនឃើញគណនី owner", panel.says_not_since(mark, "+85512999000"))
     mark = panel.mark()
     await panel.cb(f"acc:view:{account_id}", user_id=STAFF)
@@ -810,7 +812,7 @@ async def main() -> int:
     expect("បន្ទាប់ពី Save → userbot reconcile ចាប់ផ្តើមគណនី", fake_manager.reconciled == 1)
     mark = panel.mark()
     await panel.msg("/accounts", user_id=STAFF)
-    expect("បន្ទាប់ពី Save → Account បង្ហាញក្នុង /accounts", panel.said_since(mark, LOGIN_PHONE))
+    expect("បន្ទាប់ពី Save → Account បង្ហាញក្នុង /accounts (លេខបិទកណ្តាល)", panel.said_since(mark, MASKED_PHONE))
 
     # ៩) លេខដើម + session ថ្មី → upsert (មិនបង្កើត row ស្ទួន)
     FakeClient.reset()
@@ -844,10 +846,11 @@ async def main() -> int:
         await session.commit()
     mark = panel.mark()
     await panel.msg("/accounts", user_id=STAFF2)
-    expect("Staff ទី២ → /accounts មិនបង្ហាញគណនីរបស់ Staff ទី១", not panel.said_since(mark, LOGIN_PHONE))
+    expect("Staff ទី២ → /accounts មិនបង្ហាញគណនីរបស់ Staff ទី១", not panel.said_since(mark, MASKED_PHONE))
     mark = panel.mark()
     await panel.msg("/accounts", user_id=OWNER)
-    expect("Owner → /accounts ឃើញគណនីរបស់ Staff", panel.said_since(mark, LOGIN_PHONE))
+    expect("Owner → /accounts ឃើញគណនីរបស់ Staff", panel.said_since(mark, MASKED_PHONE))
+    expect("គ្រប់ path → លេខទូរស័ព្ទពេញលេញមិនដែលចេញក្នុង chat", panel.says_not_since(0, LOGIN_PHONE))
 
     expect("គ្រប់ flow → គ្មានសារ «កូដ OTP» សោះ", panel.says_not_since(0, "កូដ OTP"))
 

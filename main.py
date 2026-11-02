@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 
@@ -24,8 +25,10 @@ def setup_logging() -> None:
     """
     from userbot.safety import SecretRedactor
 
+    # LOG_LEVEL=debug បើក traceback (នៅតែឆ្លង SecretRedactor ដូចគ្នា) — លំនាំដើម INFO គ្មាន PII
+    level = (os.getenv("LOG_LEVEL") or "INFO").strip().upper()
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(getattr(logging, level, logging.INFO))
     formatter = logging.Formatter("%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
 
     file_handler = RotatingFileHandler(LOG_DIR / "app.log", maxBytes=5_000_000, backupCount=5, encoding="utf-8")
@@ -104,5 +107,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nបានបិទដោយសន្តិវិឌី (Ctrl+C)")
     except Exception as exc:  # noqa: BLE001
-        log.exception("ចាប់ផ្តើមមិនបាន: %s", exc)
+        log.exception("ចាប់ផ្តើមមិនបាន")
         sys.exit(1)

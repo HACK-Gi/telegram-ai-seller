@@ -23,7 +23,7 @@ from database.session import db_session
 from userbot import credentials, session_store
 from userbot.catalog import Catalog
 from userbot.outbox import PRIORITY_REPLY, Outbox, OutboxItem, PeerRef, TelethonSender
-from userbot.safety import describe_error
+from userbot.safety import describe_error, mask_phone
 from userbot.seller import Seller
 from userbot.controls import Controls
 
@@ -175,7 +175,7 @@ class AccountManager:
             if account.id not in self._missing_creds:
                 self._missing_creds.add(account.id)
                 log.warning("គណនី #%s គ្មាន api credentials — រំលង", account.id)
-                await self.notify(f"🔑 គណនី {credentials.mask_phone(account.phone)} ភ្ជាប់មិនបាន — {message}")
+                await self.notify(f"🔑 គណនី #{account.id} ភ្ជាប់មិនបាន — {message}")
             return False
         self._missing_creds.discard(account.id)
 
@@ -184,7 +184,7 @@ class AccountManager:
         except session_store.SessionCryptoError as exc:
             async with db_session() as db:
                 await crud.set_account_status(db, account.id, AccountStatus.OFFLINE, str(exc))
-            await self.notify(f"🔐 គណនី {credentials.mask_phone(account.phone)} ភ្ជាប់មិនបាន — {exc}")
+            await self.notify(f"🔐 គណនី #{account.id} ភ្ជាប់មិនបាន — {describe_error(exc)}")
             return False
 
         api_id, api_hash = creds
@@ -208,7 +208,8 @@ class AccountManager:
                 await crud.set_account_status(db, account.id, status, describe_error(exc))
             await safe_disconnect(client)
             await self.notify(
-                f"🔴 គណនី {account.phone} ភ្ជាប់មិនបាន ({name}{' — session ត្រូវចុះឈ្មោះឡើងវិញ' if banned else ''})"
+                f"🔴 គណនី #{account.id} {mask_phone(account.phone)} ភ្ជាប់មិនបាន"
+                f" ({name}{' — session ត្រូវចុះឈ្មោះឡើងវិញ' if banned else ''})"
             )
             return False
 
@@ -235,7 +236,7 @@ class AccountManager:
 
         self._clients[account.id] = client
         self._outboxes[account.id] = outbox
-        log.info("ភ្ជាប់គណនី %s (#%d) ជា %s", account.phone, account.id, me.username or me.phone or me.id)
+        log.info("ភ្ជាប់គណនី #%d ជា %s (%s)", account.id, me.username or "—", mask_phone(account.phone))
         return True
 
     async def stop_client(self, account_id: int) -> None:

@@ -4,6 +4,7 @@ import logging
 from openai import AsyncOpenAI
 
 from ai_engine.base import AIEngine, AIError, Turn
+from userbot.safety import describe_error
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,8 @@ class GroqEngine(AIEngine):
             return reply
 
         except Exception as e:
-            logger.error(f"Groq API error: {type(e).__name__}: {e}")
-            raise AIError(f"Groq API error: {e}")
+            logger.error("Groq API error: %s", describe_error(e))
+            raise AIError(f"Groq API error: {describe_error(e)}")
 
     async def close(self) -> None:
         await self.client.close()

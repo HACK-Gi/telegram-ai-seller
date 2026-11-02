@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardMarkup, Message
 
 from database.models import Account, Customer, Order, Product, QRCode
 from helpers import esc, format_dt, money, shorten
@@ -18,7 +18,18 @@ async def send_long(target: Message, text: str) -> None:
         try:
             await target.answer(chunk)
         except TelegramBadRequest as exc:
-            await target.answer(f"⚠️ មិនអាចផ្ញើបានទេ: {esc(exc)}")
+            await target.answer(f"⚠️ មិនអាចផ្ញើបានទេ: {type(exc).__name__}")
+
+
+async def safe_edit(message: Message, text: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
+    """Edit សារ Panel ដោយមិនដួល — Telegram ឱ្យ `message is not modified` ពេលអត្ថបទ + markup
+    ដូចគ្នាទាំងស្រុង (ចុចប៊ូតុងដដែលពីរដង ឬ toggle ត្រឡប់មកតម្លៃចាស់)។"""
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        if "not modified" in str(exc):
+            return
+        raise
 
 
 def product_card(product: Product, remaining: int | None = None) -> str:
@@ -79,25 +90,49 @@ def customer_card(customer: Customer) -> str:
     return "\n".join(lines)
 
 
+def account_row(account: Account, index: int) -> str:
+    """បន្ទាត់គណនីមួយក្នុងបញ្ជី /accounts — លេខរៀង + ស្ថានភាព + លេខបិទកណ្តាល (គ្មានកំណត់ចំនួន)។"""
+    from database.models import AccountStatus
+    from userbot import safety
+
+    star = " ⭐" if account.is_primary else ""
+    return (
+        f"{index}. <b>{esc(account.display_label())}</b> <code>#{account.id}</code>{star}\n"
+        f"   {AccountStatus.LABELS.get(account.status, account.status)}"
+        f" · {'🤖 on' if account.ai_enabled else '🤖 off'}"
+        f" · {'🟢 បើក' if account.enabled else '⚪ បិទ'}"
+        f" · 🔐 {'✅' if account.session_encrypted else '❌'}"
+        f" · 📞 {esc(safety.mask_phone(account.phone))}"
+    )
+
+
 def account_card(account: Account) -> str:
     from database.models import AccountStatus
-    from userbot import credentials
+    from userbot import credentials, safety
 
-    # បង្ហាញស្ថានភាពប៉ុណ្ណោះ — api_id/api_hash មិនដែលចេញជាអត្ថបទ (ទោះ masked) ឡើយ
+    # បង្ហាញស្ថានភាពប៉ុណ្ណោះ — api_id/api_hash/session string មិនដែលចេញជាអត្ថបទទេ
     key_line = (
-        "🔑 api: ✅ កំណត់ក្នុង .env រួច"
+        "🔑 <b>App:</b> ✅ កំណត់ក្នុង <code>.env</code> រួច"
         if credentials.is_configured()
-        else "🔑 api: ❌ .env ខ្វះ TG_API_ID/TG_API_HASH"
+        else "🔑 <b>App:</b> ❌ <code>.env</code> ខ្វះ TG_API_ID/TG_API_HASH"
     )
-    return "\n".join(
-        [
-            f"📱 <b>{esc(account.phone)}</b>" + ("  ⭐ Primary" if account.is_primary else ""),
-            f"👤 {esc(account.name or '—')} · {AccountStatus.LABELS.get(account.status, account.status)}",
-            f"🤖 AI: {'🟢 on' if account.ai_enabled else '⚪ off'} · បង្កើត {format_dt(account.created_at)}",
-            key_line,
-        ]
-        + ([f"⚠️ {esc(shorten(account.last_error, 160))}"] if account.last_error else [])
-    )
+    session_line = "🔐 <b>Session:</b> ✅ Configured" if account.session_encrypted else "🔐 <b>Session:</b> ❌ នៅមិនទាន់មាន"
+    owner_line = "" if account.owner_admin_id is None else f"👑 <b>ម្ចាស់:</b> <code>{account.owner_admin_id}</code>"
+    lines = [
+        f"{'⭐' if account.is_primary else '▫️'} <b>គណនី #{account.id}</b> · {esc(account.display_label())}",
+        f"<b>{AccountStatus.LABELS.get(account.status, account.status)}</b>"
+        f" · {'🟢 AI ឆ្លើយ' if account.ai_enabled else '⚪ AI ឈប់'}"
+        f" · {'🟢 បើក' if account.enabled else '⚪ បិទ'}",
+        f"📞 {esc(safety.mask_phone(account.phone))} · 🆔 <code>{account.telegram_user_id or '—'}</code>",
+        session_line,
+        key_line,
+        f"🕒 បង្កើត {format_dt(account.created_at)}" + (f" · ⏰ {esc(account.working_hours)}" if account.working_hours else ""),
+    ]
+    if owner_line:
+        lines.append(owner_line)
+    if account.last_error:
+        lines.append(f"⚠️ {esc(shorten(account.last_error, 160))}")
+    return "\n".join(lines)
 
 
 def qrcode_card(qr: QRCode, account_names: dict[int, str] | None = None) -> str:

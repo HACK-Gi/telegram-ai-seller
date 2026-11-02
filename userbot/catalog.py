@@ -24,6 +24,7 @@ from database.session import db_session
 from helpers import esc, money, utcnow
 from sqlalchemy import select
 from userbot import limits
+from userbot.safety import describe_error
 from userbot.outbox import PRIORITY_REPLY, Outbox, OutboxItem, PeerRef
 
 log = logging.getLogger("userbot.catalog")
@@ -370,8 +371,9 @@ class Catalog:
                 await event.answer("", cache_time=1)
             else:
                 await event.answer(alert, cache_time=5)
-        except Exception:  # noqa: BLE001
-            log.exception("catalog callback កំហុសគណនី %s", self.account_id)
+        except Exception as exc:  # noqa: BLE001
+            log.error("catalog callback កំហុសគណនី #%s: %s", self.account_id, describe_error(exc))
+            log.debug("catalog traceback", exc_info=True)
             try:
                 await event.answer("⚠️ មានបញ្ហាបន្តិច — សាកល្បងម្តងទៀត", cache_time=5)
             except Exception:  # noqa: BLE001

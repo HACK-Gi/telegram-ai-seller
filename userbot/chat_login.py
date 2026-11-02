@@ -434,7 +434,13 @@ class LoginCoordinator:
         ដូច្នេះគ្មាន secret របស់ App ត្រួតពិនិត្យលើ DB/chat/log ទេ។
         """
         async with db_session() as session:
-            existing = await session.scalar(select(Account).where(Account.phone == entry.phone))
+            phone_key = safety.account_phone_key(entry.phone, getattr(me, "id", None))
+            existing = await session.scalar(
+                select(Account).where(
+                    (Account.telegram_user_id == getattr(me, "id", None)) & (Account.telegram_user_id.isnot(None))
+                    | (Account.phone == phone_key)
+                )
+            )
             if existing is not None:
                 if existing.owner_admin_id is not None and existing.owner_admin_id != entry.user_id:
                     raise LoginAborted("🚫 លេខនេះក្លាយជាគណនីរបស់ admin ផ្សេងមុនរួច — ការ login ត្រូវបោះបង់")
@@ -442,6 +448,7 @@ class LoginCoordinator:
                     update(Account)
                     .where(Account.id == existing.id)
                     .values(
+                        phone=phone_key,
                         session_encrypted=token,
                         device_index=entry.device_index,
                         name=entry.name or existing.name,
@@ -450,7 +457,7 @@ class LoginCoordinator:
                 return int(existing.id)
             account = await crud.create_account(
                 session,
-                phone=entry.phone,
+                phone=phone_key,
                 session_encrypted=token,
                 name=entry.name,
                 owner_admin_id=entry.user_id,
