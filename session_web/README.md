@@ -33,7 +33,7 @@ object ឈ្មោះ `app` — Vercel រកឃើញស្វ័យប្រ�
 | `SESSION_WEB_SECRET` | ណែនាំខ្លាំង | Fernet key សម្រាប់ pending token — បង្កើតដោយ `.venv/bin/python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"`។ បើមិនដាក់ → key បណ្តោះអាសន្ន per isolate (ភ្ញៀវត្រូវសុំ OTP ឡើងវិញ ពេល isolate ផ្លាស់ប្តូរ) |
 | `SESSION_WEB_URL` | មិនចាំបាច់ | `https://<domain>` — ដាក់ CORS ឱ្យតែ origin របស់ app ខ្លួន |
 | `SESSION_WEB_TTL` | ទេ | វិនាទី សម្រាប់ pending token (default `600`) |
-| `SESSION_WEB_TIMEOUT` | ទេ | វិនាទី សម្រាប់ពេល Telegram ឆ្លើយ (default `45`) |
+| `SESSION_WEB_TIMEOUT` | ទេ | វិនាទី សម្រាប់ពេល Telegram ឆ្លើយ (default `30`) |
 
 ## ៣. របៀបប្រើ (សម្រាប់ភ្ញៀវ)
 
@@ -67,5 +67,24 @@ object ឈ្មោះ `app` — Vercel រកឃើញស្វ័យប្រ�
 
 ## ៦. ជួសជុល
 
-`GET /health` → `{"ok":true,"ttl":600,"timeout":45}`។ បើ `/send_otp` ឱ្យ `502` ជាប្រចាំ
-= បណ្តាញទៅ Telegram ខូច ឬ IP ត្រូវហាមឃាត់ (មិនមែនកំហុស code ទេ)។
+`GET /health` → `{"ok":true,"ttl":600,"timeout":30,"secret_configured":true,"version":"..."}`។
+បើ `/send_otp` ឱ្យ `502` ជាប្រចាំ = បណ្តាញទៅ Telegram ខូច ឬ IP ត្រូវហាមឃាត់ (មិនមែនកំហុស code ទេ)។
+
+គ្រប់ error response មាន `detail` = កូដខ្លី ១ ពាក្យ (`ApiIdInvalidError`, `token_expired`,
+`secret_missing`, `stage_failed`, …) ដែលបង្ហាញលើទំព័រក្នុង «〔…〕» — ភ្ញៀវរាយការណ៍តែកូដនោះ
+គ្រប់គ្រាន់សម្រាប់ trace ដោយមិនចាំបាច់បង្ហាញទិន្នន័យផ្ទាល់ខ្លួន។
+
+debug ពី production (log គ្មាន OTP/api_hash/លេខទូរសព្ទ/session — មានតែប្រវែង និងឈ្មោះ error):
+
+```bash
+cd session_web
+vercel logs --since 30m --limit 50          # hobby រក្សា log តែ ៣០ នាទី
+vercel logs --follow                         # មើលពេលភ្ញៀវកំពុងសាកល្បង
+```
+
+មុន deploy ត្រូវរត់ test គ្មានបណ្តាញឱ្យផាសុកភាពជាមុនសិន (វាចាប់កំហុសដូចជា NameErrorដូចជា NameError
+ដែលធ្វើឱ្យ `/send_otp` ជា 500 និងភ្ញៀវឃើញតែ Error Code):
+
+```bash
+.venv/bin/python scripts/smoke_test_session_web.py
+```

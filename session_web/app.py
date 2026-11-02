@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -47,19 +48,35 @@ except ImportError:  # dotenv មិនជាការចាំបាច់ន�
 # ទិន្នន័យសម្ងាត់នៅសល់យូរ។ កែតាម env SESSION_WEB_TTL (វិនាទី)។
 PENDING_TTL = int(os.getenv("SESSION_WEB_TTL") or 600)
 MAX_CODE_TRIES = 5
-LOGIN_TIMEOUT = float(os.getenv("SESSION_WEB_TIMEOUT") or 45)
+# budget របស់ Telegram 1 ដង រួម + wait_for។ 45s ជាង `maxDuration` របស់ Vercel (៦០s) បន្តិច
+# ហើយតូចគ្រប់គ្រាន់សម្រាប់ IP datacenter (AWS) ដែល Telegram ឆ្លើយយឺត — បើយូរជាងនេះ
+# platform កាត់ request មុន ទើបភ្ញៀវឃើញតែ 504 ទទេ។
+LOGIN_TIMEOUT = float(os.getenv("SESSION_WEB_TIMEOUT") or 30)
 DEFAULT_REGION_CC = "+855"  # ភ្ញៀវរបស់ប្រព័ន្ធនេះភាគច្រើនជាខ្មែរ
 
 
-def _secret_key() -> bytes:
-    """Fernet key សម្រាប់ pending token — ខ្វះ → បង្កើតបណ្តោះអាសន្ន (តែមួយ process)។"""
+APP_VERSION = "2026.11.02a"
+
+
+def _secret_key() -> tuple[bytes, str]:
+    """Fernet key សម្រាប់ pending token — ខ្វះ/ខុស → បង្កើតបណ្តោះអាសន្ន (តែមួយ process)។
+
+    ត្រឡប់ (key, source); source ទទេ = គ្មាន env ដែល production serverless នេះសម្លាប់ flow
+    (token ពី `/send_otp` isolate មួយ read មិនបានពី isolate មួយទៀត) ទើប routes ប្រាប់ម្ចាស់។
+    """
     raw = (os.getenv("SESSION_WEB_SECRET") or "").strip()
     if raw:
-        return raw.encode()
-    return Fernet.generate_key()
+        try:
+            Fernet(raw.encode())  # ផ្ទៀង key មុន ទើបបរាជ័យច្បាស់នៅទីនេះ មិនមែនពេលភ្ញៀវចុច «ផ្ញើ OTP»
+            return raw.encode(), "env"
+        except (ValueError, TypeError):
+            # `log` មិនទាន់មានពេល import → print
+            print("⚠️  session_web: SESSION_WEB_SECRET មិនមែន Fernet key ត្រឹមត្រូវ — បង្កើតបណ្តោះអាសន្ន",
+                  flush=True)
+    return Fernet.generate_key(), ""
 
 
-SECRET = _secret_key()
+SECRET, SECRET_SOURCE = _secret_key()
 FERNET = Fernet(SECRET)
 
 # pending token ដែលប្រើហើយ — best effort (isolate ចាស់) ប៉ុន្តែ TTL កំណត់រយៈពេលបាន
@@ -97,6 +114,19 @@ _origins() and CORS(app, resources={r("/verify_otp"): {"origins": _origins()}, r
 logging.getLogger("telethon").setLevel(logging.ERROR)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
 log = logging.getLogger("session_web")
+# គ្មាន handler → root មិន print ទេ ហើយ Vercel runtime logs ឃើញតែ werkzeug access line
+# ទើប debug ពី production ធ្វើមិនបាន។ StreamHandler(stderr) គឺជាអ្វីដែល Vercel ចាប់។
+if not log.handlers:
+    _handler = logging.StreamHandler(sys.stderr)
+    _handler.setFormatter(logging.Formatter("[session_web] %(levelname)s: %(message)s"))
+    log.addHandler(_handler)
+log.setLevel(logging.INFO)
+log.propagate = False
+
+try:  # ឈ្មោះ class ត្រូវ version ទើប ប្រើ isinstance បាន (fallback ទៅឈ្មោះ)
+    from telethon.errors import SessionPasswordNeededError as _PASSWORD_NEEDED
+except ImportError:  # pragma: no cover
+    _PASSWORD_NEEDED = None
 
 
 # ---------------- helpers ----------------
@@ -167,8 +197,17 @@ def _client_creds(data: dict) -> tuple[int, str]:
 
 async def _login(phone: str, api_id: int, api_hash: str, code: str, password: str | None,
                  phone_code_hash: str) -> tuple[str, str]:
-    """→ ("ok", session_string) ឬ ("2fa", "") ឬ raise។ client ត្រូវ disconnect ជានិច្ច។"""
-    client = TelegramClient(StringSession(), api_id, api_hash)
+    """→ ("ok", session_string) ឬ ("2fa", "") ឬ ("failed", "") ឬ raise។ client ត្រូវ disconnect ជានិច្ច។
+
+    `connection_retries`/`request_retries` = ១ ដោយចេតនា: serverless (Vercel) មាន
+    maxDuration តឹង ហើយ Telethon លំនាំដើម retry ៥ ដង × ១s + auto_reconnect នឹង
+    គណនារយៈពេលជា ២០–៣០s ពេលបណ្តាញយឺត ទើប platform កាត់ request ជា 504 ដោយ
+    គ្មានសារអ្វីឡើយ — បរាជ័យលឿន ប្រាប់ឱ្យដឹងហេតុ ល្អជាង suspend រហូតដាច់។
+    """
+    client = TelegramClient(
+        StringSession(), api_id, api_hash,
+        connection_retries=1, request_retries=1, retry_delay=1, auto_reconnect=False,
+    )
     try:
         await asyncio.wait_for(client.connect(), timeout=LOGIN_TIMEOUT)
         try:
@@ -177,13 +216,11 @@ async def _login(phone: str, api_id: int, api_hash: str, code: str, password: st
             else:
                 await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
         except Exception as exc:  # noqa: BLE001
-            if type(exc).__name__ == "SessionPasswordNeededError":
+            if _is_password_needed(exc):
                 return "2fa", ""
             raise
         saved = client.session.save()
-        if not saved:
-            return "failed", ""
-        return "ok", saved
+        return ("ok", saved) if saved else ("failed", "")
     finally:
         try:
             await client.disconnect()
@@ -192,7 +229,10 @@ async def _login(phone: str, api_id: int, api_hash: str, code: str, password: st
 
 
 async def _request_code(phone: str, api_id: int, api_hash: str) -> str:
-    client = TelegramClient(StringSession(), api_id, api_hash)
+    client = TelegramClient(
+        StringSession(), api_id, api_hash,
+        connection_retries=1, request_retries=1, retry_delay=1, auto_reconnect=False,
+    )
     try:
         await asyncio.wait_for(client.connect(), timeout=LOGIN_TIMEOUT)
         sent = await client.send_code_request(phone)
@@ -206,6 +246,17 @@ async def _request_code(phone: str, api_id: int, api_hash: str) -> str:
 
 def _error_name(exc: BaseException) -> str:
     return type(exc).__name__
+
+
+def _is_password_needed(exc: BaseException) -> bool:
+    """Telethon ប្តូរឈ្មោះ exception តាម version — ពិនិត្យទាំង class និង name។
+
+    ចំណាំ `PasswordHashInvalidError` **មិនមែន** «ត្រូវការ 2FA» ទេ វាជា «ពាក្យសម្ងាត់ខុស»
+    បើរាប់វាជា 2FA ផង flow នឹងវិលត្រឡប់ទៅប្រអប់ 2FA ជារៀងរហូត។
+    """
+    if _PASSWORD_NEEDED is not None and isinstance(exc, _PASSWORD_NEEDED):
+        return True
+    return _error_name(exc) == "SessionPasswordNeededError"
 
 
 _USER_HINTS = {
@@ -222,6 +273,12 @@ _USER_HINTS = {
     "SrpPasswordChangedError": "ពាក្យសម្ងាត់ 2FA មិនត្រឹមត្រូវ",
     "AuthKeyUnregisteredError": "គណនីនេះត្រូវបាន log out — សូមចាប់ផ្តើមឡើងវិញ",
     "FloodWaitError": "Telegram សុំឱ្យរង់ចាំបន្តិច មុនសុំ OTP ថ្មី",
+    # កំហុសទូទៅពេល server រត់នៅ IP datacenter (Vercel = AWS) — ភ្ញៀវត្រូវធ្វើតាម App ខ្លួនឯង
+    "SignInUnapprovedError": "Telegram សុំឱ្យអនុម័តក្នុង App របស់អ្នក — បើក Telegram រួចចុចបន្ត សាកល្បងឡើងវិញ",
+    "PhoneNumberOc2RequestedError": "Telegram ផ្ញើ link ទៅ App របស់អ្នក (មិនមែន SMS) — ពិនិត្យ Telegram រួចសុំ OTP ថ្មី",
+    "AuthRestartError": "Telegram សុំចាប់ផ្តើម OTP ឡើងវិញ — សូមសុំ OTP ថ្មី",
+    "SessionWaitTooLongError": "រង់ចាំយូរពេក — សូមសុំ OTP ថ្មី",
+    "UnauthorizedAccountError": "Telegram មិនអនុញ្ញាតគណនីនេះ — សូមប្រើ scripts/get_session.py លើកុំព្យូទ័ររបស់អ្នក",
 }
 
 
@@ -249,7 +306,27 @@ def index():
 @app.get("/health")
 @limiter.exempt
 def health():
-    return jsonify({"ok": True, "ttl": PENDING_TTL, "timeout": LOGIN_TIMEOUT})
+    return jsonify({
+        "ok": True,
+        "secret_configured": bool(SECRET_SOURCE),
+        "ttl": PENDING_TTL,
+        "timeout": LOGIN_TIMEOUT,
+        "version": APP_VERSION,
+    })
+
+
+def _require_secret():
+    """SESSION_WEB_SECRET ខ្វះ → token មាន key មួយ isolate ប៉ុណ្ណោះ ទើប verify បរាជ័យ
+    «ផុតកំណត់» ទោះ OTP ត្រូវ (serverless isolate ខុសគ្នា) ។ ប្រាប់ម្ចាស់ច្បាស់ជាងឱ្យភ្ញៀវ
+    ទន្ទងមិនដឹង។ ត្រឡប់ None បើ OK ឬ error response បើខ្វះ។"""
+    if SECRET_SOURCE:
+        return None
+    return jsonify({
+        "status": "error",
+        "detail": "secret_missing",
+        "message": "Server មិនទាន់មាន SESSION_WEB_SECRET — ម្ចាស់គេហទំព័រត្រូវបន្ថែម Environment "
+                   "Variable នេះ រួច Redeploy (បើខ្វះ token រវាង OTP ពេល verify នឹងបរាជ័យ)",
+    }), 503
 
 
 @app.post("/send_otp")
@@ -260,21 +337,35 @@ def send_otp():
     api_hash = str(data.get("api_hash") or "").strip()
     phone = normalize_phone(str(data.get("phone") or ""))
     if not api_id_raw.isdigit() or int(api_id_raw) <= 0:
-        return jsonify({"status": "error", "message": "API ID ត្រូវតែជាលេខ (យកពី my.telegram.org/apps)"}), 400
+        return jsonify({"status": "error", "detail": "api_id_invalid",
+                        "message": "API ID ត្រូវតែជាលេខ (យកពី my.telegram.org/apps)"}), 400
     if not API_HASH_RE.match(api_hash):
-        return jsonify({"status": "error", "message": "API Hash ត្រូវជា hex ៣២ តួអក្សរ"}), 400
+        return jsonify({"status": "error", "detail": "api_hash_invalid",
+                        "message": "API Hash ត្រូវជា hex ៣២ តួអក្សរ"}), 400
     if phone is None:
-        return jsonify({"status": "error", "message": "លេខទូរស័ព្ទខុសទ្រង់ទ្រាយ — វាយ 093251670 ឬ +85593251670"}), 400
+        return jsonify({"status": "error", "detail": "phone_invalid",
+                        "message": "លេខទូរស័ព្ទខុសទ្រង់ទ្រាយ — វាយ 093251670 ឬ +85593251670"}), 400
+    blocked = _require_secret()
+    if blocked is not None:
+        return blocked
     if not _phone_allowed(phone):
-        return jsonify({"status": "error", "message": "សុំ OTP ច្រើនដងពេក — សូមរង់ចាំ ១០ នាទី"}), 429
+        return jsonify({"status": "error", "detail": "phone_rate_limited",
+                        "message": "សុំ OTP ច្រើនដងពេក — សូមរង់ចាំ ១០ នាទី"}), 429
 
+    started = time.monotonic()
     try:
-        phone_code_hash = asyncio.run(_request_code(phone, int(api_id_raw), api_hash))
+        phone_code_hash = asyncio.run(asyncio.wait_for(
+            _request_code(phone, int(api_id_raw), api_hash), timeout=LOGIN_TIMEOUT + 5))
     except Exception as exc:  # noqa: BLE001
-        log.info("send_otp failed: %s", _error_name(exc))  # ប្រភេទតែប៉ុណ្ណោះ — គ្មានទិន្នន័យ
-        return jsonify({"status": "error", "message": _friendly(exc)}), 502
+        name = _error_name(exc)
+        # តួអក្សរ/ឈ្មោះ class តែប៉ុណ្ណោះ — គ្មាន api_hash គ្មានលេខទូរស័ព្ទគ្មាន session
+        log.info("send_otp failed: %s (%dms)", name, int((time.monotonic() - started) * 1000))
+        return jsonify({"status": "error", "detail": name, "message": _friendly(exc)}), 502
+    log.info("send_otp ok: hash_len=%d (%dms)", len(phone_code_hash),
+             int((time.monotonic() - started) * 1000))
     if not phone_code_hash:
-        return jsonify({"status": "error", "message": "Telegram មិនផ្តល់សន្ទស្សន៍ OTP — សូមសាកល្បងឡើងវិញ"}), 502
+        return jsonify({"status": "error", "detail": "no_phone_code_hash",
+                        "message": "Telegram មិនផ្តល់សន្ទស្សន៍ OTP — សូមសាកល្បងឡើងវិញ"}), 502
 
     token = _issue(
         {
@@ -297,38 +388,53 @@ def verify_otp():
     token = str(body.get("request_id") or "")
     code = str(body.get("otp") or body.get("code") or "").strip()
     password = str(body.get("password") or "")
+    # វាស់វែងទាំងអស់ គ្មានខ្លឹមសារ (OTP/ពាក្យសម្ងាត់/token) — សម្រាប់ debug ពី Vercel log បាន
+    log.info("verify_otp: token_len=%d otp_len=%d has_password=%s",
+             len(token), len(code), bool(password))
     payload = _read(token)
     if payload is None:
-        return jsonify({"status": "error", "message": "សំណើនេះផុតកំណត់ ឬប្រើហើយ — សូមសុំ OTP ថ្មី"}), 400
+        return jsonify({"status": "error", "detail": "token_expired", "restart": True,
+                        "message": "សំណើនេះផុតកំណត់ ឬប្រើហើយ — សូមសុំ OTP ថ្មី"}), 400
 
     api_id, api_hash = _client_creds(payload)
+    started = time.monotonic()
     try:
-        stage, session_string = asyncio.run(
-            _login(payload["phone"], api_id, api_hash, code, password or None, payload["hash"])
-        )
+        # budget សរុប មិនមែនតែ `connect` — `sign_in` អាចអត់ឆ្លើយ ទើប Vercel កាត់ជា 504 ដោយ
+        # គ្មានសារ ហើយភ្ញៀវឃើញតែ «Error Code»។ wait_for ធានាឱ្យមានចម្លើយក្នុង ~LOGIN_TIMEOUT
+        stage, session_string = asyncio.run(asyncio.wait_for(
+            _login(payload["phone"], api_id, api_hash, code, password or None, payload["hash"]),
+            timeout=LOGIN_TIMEOUT + 5,
+        ))
     except Exception as exc:  # noqa: BLE001
         name = _error_name(exc)
-        log.info("verify failed: %s", name)
+        log.info("verify failed: %s (%dms)", name, int((time.monotonic() - started) * 1000))
         if name in ("PhoneCodeInvalidError", "SessionExpiredError", "SignInCodeChangedError"):
             _consume(token)  # កូដខុស ១ ដង → លុកត្រឹម token ចាស់ចេញពីការប្រើឡើងវិញ
             tries = int(payload.get("tries") or 0) + 1
             if tries >= MAX_CODE_TRIES or name != "PhoneCodeInvalidError":
-                return jsonify({"status": "error", "message": _friendly(exc), "restart": True}), 401
+                return jsonify({"status": "error", "detail": name,
+                                "message": _friendly(exc), "restart": True}), 401
             payload["tries"] = tries
             return jsonify(
-                {"status": "error", "message": _friendly(exc), "request_id": _reissue(payload)}
+                {"status": "error", "detail": name, "message": _friendly(exc),
+                 "request_id": _reissue(payload)}
             ), 401
-        return jsonify({"status": "error", "message": _friendly(exc), "restart": True}), 502
+        return jsonify({"status": "error", "detail": name,
+                        "message": _friendly(exc), "restart": True}), 502
 
     if stage == "2fa":
         _consume(token)
         payload["stage"] = "password"
+        log.info("verify → 2fa_required (%dms)", int((time.monotonic() - started) * 1000))
         return jsonify({"status": "2fa_required", "request_id": _reissue(payload)})
 
     _consume(token)
+    log.info("verify done: stage=%s session_len=%d (%dms)", stage, len(session_string or ""),
+             int((time.monotonic() - started) * 1000))  # ប្រវែងតែប៉ុណ្ណោះ — គ្មានខ្លឹមសារ session
     if stage != "ok" or not session_string:
         return jsonify(
-            {"status": "error", "message": "ចូលបាន ប៉ុន្តែ Telegram មិនផ្តល់ session — សូមសុំ OTP ថ្មី"}
+            {"status": "error", "detail": f"stage_{stage}",
+             "message": "ចូលបាន ប៉ុន្តែ Telegram មិនផ្តល់ session — សូមសុំ OTP ថ្មី"}
         ), 502
     return jsonify({"status": "ok", "session_string": session_string})
 
@@ -340,8 +446,10 @@ def rate_limited(_error):
 
 @app.errorhandler(500)
 def server_error(error):
-    log.info("internal error: %s", type(error).__name__)
-    return jsonify({"status": "error", "message": "កំហុសពី server — សូមសាកល្បងឡើងវិញ"}), 500
+    name = type(error).__name__
+    log.info("internal error: %s", name)
+    return jsonify({"status": "error", "detail": name,
+                    "message": f"កំហុសពី server ({name}) — សូមសាកល្បងឡើងវិញ"}), 500
 
 
 if __name__ == "__main__":

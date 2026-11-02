@@ -6,7 +6,7 @@
 សំណុំតេស្តនេះ patch `_request_code`/`_login` ដូចគ្រីប fake Telethon ក្នុង smoke_test.py ហើយ
 រត់ Flask test_client តាម flow ពិត (send_otp → verify_otp → 2FA → session)។
 
-ច្បាប់ ១២ ដែលការ test ការពារ៖
+ច្បាប់ ១៥ ដែលការ test ការពារ៖
 
 ១.  ទំព័រ render + `Cache-Control: no-store` គ្រប់ response
 ២.  validation មិនប៉ះបណ្តាញ (api_id លេខ, api_hash hex ៣២, លេខទូរស័ព្ទ E.164)
@@ -20,11 +20,16 @@
 ១០. rate limit តាមលេខទូរស័ព្ទ រក្សាតែ hash
 ១១. token មិនអាចប្រើស្ទួន (replay)
 ១២. គ្មាន session string លេចក្នុង response របស់ `/send_otp`
+១៣. គ្រប់ error មាន `detail` កូដខ្លី (ភ្ញៀវរាយការណ៍ → trace បាន) + `/health` version
+១៤. `SESSION_WEB_SECRET` ខ្វះ → 503 «secret_missing» (Vercel កំហុសពិតប្រាកដ) មិនមែន NameError/500
+១៥. Fernet key ខុសទ្រង់ទ្រាយ → បង្កើតថ្មី ដោយសុវត្ថិភាព (app មិន dead នៅពេល import)
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -200,6 +205,8 @@ check("log គ្មានលេខទូរស័ព្ទ", "091234567" not in
 check("log គ្មាន api_hash", "f" * 32 not in dumped and HASH32 not in dumped)
 check("log គ្មាន message ដើមរបស់ exception", "too many requests for" not in dumped)
 check("log មានតែឈ្មោះ error class", "FloodWaitError" in dumped)
+check("logger មាន handler ពិត (Vercel runtime log ចាប់បាន — មិនមែន rootទទេ)",
+      any(isinstance(h, logging.StreamHandler) for h in web.log.handlers) and web.log.level == logging.INFO)
 
 print("— rate limit តាមលេខទូរស័ព្ទ (រក្សាតែ hash) —")
 web._USED.clear()
@@ -211,6 +218,73 @@ codes = [
 ]
 check(f"លេខតែមួយ → ៣ ដងដំបូង OK រួច 429 {codes}", codes == [200, 200, 200, 429, 429])
 check("រក្សាទុកតែ hash — គ្មានលេខទូរស័ព្ទសុទ្ធក្នុង memory", all(len(k) == 16 and "091111111" not in k for k in web._PHONE_HITS))
+
+print("— កូដ error ត្រួតពិនិត្យពីចម្ងាយ (detail + health) —")
+health2 = client.get("/health").get_json()
+check("/health មាន version", bool(health2.get("version")))
+check("/health បញ្ជាក់ secret ពិត (SECRET_SOURCE defined)", health2.get("secret_configured") is True)
+bad = client.post("/send_otp", json={"api_id": "abc", "api_hash": HASH32, "phone": PHONE_E164}).get_json()
+check("error validation មាន detail ខ្លី", bad.get("detail") == "api_id_invalid")
+web._USED.clear()
+web._PHONE_HITS.clear()
+
+
+async def empty_login(*a, **k):
+    return "failed", ""
+
+
+web._login = empty_login
+tok = client.post("/send_otp", json={"api_id": str(API_ID), "api_hash": HASH32,
+                                     "phone": "092222222"}).get_json()["request_id"]
+nil = client.post("/verify_otp", json={"request_id": tok, "otp": "55555"}).get_json()
+check("session ទទេ → detail ប្រាប់ stage", nil.get("detail") == "stage_failed")
+web._login = fake_login
+
+print("— សារសម្រាប់ IP datacenter (Vercel) ដែល Telegram តែងហាម —")
+for name in ("SignInUnapprovedError", "PhoneNumberOc2RequestedError", "AuthRestartError",
+             "SessionWaitTooLongError", "UnauthorizedAccountError"):
+    hint = web._USER_HINTS.get(name, "")
+    check(f"{name} → សារខ្មែរ", bool(hint) and any("\u1780" <= c <= "\u17ff" for c in hint))
+check("គ្រប់សារ _USER_HINTS មានអក្សរខ្មែរ",
+      all(any("\u1780" <= c <= "\u17ff" for c in m) for m in web._USER_HINTS.values()))
+check("គ្មានអក្សរភាសាផ្សេងច្រឡំ (CJK/Thai) ក្នុង source",
+      not any("\u0e00" <= c <= "\u0e7f" or "\u4e00" <= c <= "\u9fff"
+              for f in (ROOT / "session_web" / "app.py", ROOT / "session_web" / "templates" / "index.html")
+              for c in f.read_text(encoding="utf-8")))
+
+print("— Fernet key ខុស → មិន crash ពេល import/រត់ —")
+saved_secret = os.environ["SESSION_WEB_SECRET"]
+os.environ["SESSION_WEB_SECRET"] = "not-a-valid-fernet-key"
+try:
+    loose_key, loose_source = web._secret_key()
+    ok_key = Fernet(loose_key).decrypt(Fernet(loose_key).encrypt(b"t")) == b"t"
+except Exception as exc:  # noqa: BLE001
+    ok_key, loose_source = False, f"raise:{type(exc).__name__}"
+check("key ខុស → បង្កើតថ្មី (source ទទេ) ហើយ Fernet ប្រើបាន", ok_key and loose_source == "")
+os.environ["SESSION_WEB_SECRET"] = saved_secret
+
+print("— ភ្ញៀវ report «គ្មានប្រអប់ session» — flow ត្រូវការ guard —")
+page_html = client.get("/").get_data(as_text=True)
+check("JS មាន guard no_session (status ok ប៉ុន្តែគ្មាន string)", "no_session" in page_html)
+check("JS បង្ហាញ detail ដើម្បី trace", "failText" in page_html)
+
+print("— SESSION_WEB_SECRET ខ្វះ (Vercel មិនទាន់ set) → 503 ច្បាស់ —")
+PROBE = (
+    "import sys,json;sys.path.insert(0,'session_web');import app as w;"
+    "c=w.app.test_client();"
+    "h=c.get('/health').get_json();"
+    "r=c.post('/send_otp',json={'api_id':'1','api_hash':'0'*32,'phone':'+85593251670'});"
+    "print(json.dumps({'secret':h.get('secret_configured'),'code':r.status_code,"
+    "'detail':r.get_json().get('detail')}))"
+)
+probe = subprocess.run([sys.executable, "-c", PROBE], cwd=str(ROOT),
+                       env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")},
+                       capture_output=True, text=True)
+check("probe រត់ជោគជ័យ (គ្មាន NameError)", probe.returncode == 0)
+seen = json.loads(probe.stdout.strip().splitlines()[-1]) if probe.stdout.strip() else {}
+check("គ្មាន env → /health secret_configured False", seen.get("secret") is False)
+check("គ្មាន env → /send_otp 503 detail secret_missing",
+      seen.get("code") == 503 and seen.get("detail") == "secret_missing")
 
 print()
 total = passed + len(failed)

@@ -123,6 +123,12 @@ function clearStatus() {
   box.style.display = "none";
 }
 
+/* message + detail (លេខកូដសុវត្ថិភាព — គ្មានទិន្នន័យផ្ទាល់ខ្លួន) ដើម្បីម្ចាស់ trace បាន */
+function failText(data, fallback) {
+  const base = (data && data.message) || fallback || "បរាជ័យ";
+  return data && data.detail ? base + " 〔" + data.detail + "〕" : base;
+}
+
 async function post(url, payload) {
   const res = await fetch(url, {
     method: "POST",
@@ -157,7 +163,7 @@ $("btn-send").addEventListener("click", async () => {
       setStatus("info", "Telegram បានផ្ញើកូដទៅលេខទូរស័ព្ទរបស់អ្នក — សូមវាយកូដខាងលើ។");
       $("otp").focus();
     } else {
-      setStatus("err", data.message || "មិនអាចផ្ញើ OTP បានទេ");
+      setStatus("err", failText(data, "មិនអាចផ្ញើ OTP បានទេ"));
     }
   } catch (e) {
     setStatus("err", e.message);
@@ -177,13 +183,17 @@ async function verify(password) {
       otp: password === null ? $("otp").value.trim() : "",
       password: password === null ? "" : password,
     });
-    if (data.status === "ok") {
+    if (data.status === "ok" && data.session_string) {
       requestId = "";
       $("session").value = data.session_string;
       showStep("step-done");
       setStatus("ok", "✅ ជោគជ័យ! ចម្លង Session String ទៅផ្ញើ Bot តាម /addsession។");
       $("session").focus();
       $("session").select();
+    } else if (data.status === "ok") {
+      requestId = "";
+      showStep("step-creds");
+      setStatus("err", "Server ឆ្លើយ «ជោគជ័យ» ប៉ុន្តែគ្មាន Session String — សូមសុំ OTP ថ្មី ឬរាយការណ៍កូដ 〔no_session〕");
     } else if (data.status === "2fa_required") {
       requestId = data.request_id;
       $("password").value = "";
@@ -193,10 +203,10 @@ async function verify(password) {
     } else if (data.restart) {
       requestId = "";
       showStep("step-creds");
-      setStatus("err", (data.message || "បរាជ័យ") + " — សូមសុំ OTP ថ្មី។");
+      setStatus("err", failText(data, "បរាជ័យ") + " — សូមសុំ OTP ថ្មី។");
     } else {
       if (data.request_id) requestId = data.request_id;
-      setStatus("err", data.message || "កូដមិនត្រឹមត្រូវ");
+      setStatus("err", failText(data, "កូដមិនត្រឹមត្រូវ"));
       $("otp").select();
     }
   } catch (e) {
@@ -216,7 +226,8 @@ $("btn-restart").addEventListener("click", () => {
 });
 
 $("btn-copy").addEventListener("click", async () => {
-  const value = $("session").value;
+  const value = $("session").value.trim();
+  if (!value) { setStatus("err", "ប្រអប់ទទេ — សូមចាប់ផ្តើមឡើងវិញ រួចសុំ OTP ថ្មី"); return; }
   try {
     await navigator.clipboard.writeText(value);
   } catch (e) {
