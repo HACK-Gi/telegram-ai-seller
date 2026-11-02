@@ -18,6 +18,7 @@ from aiogram.types import CallbackQuery, Message
 from admin_bot import keyboards, render
 from admin_bot.owner_gate import OwnerOnly
 from admin_bot.scope import Scope
+from config import settings
 from database import crud, db_session
 from database.models import Account
 from helpers import esc
@@ -30,10 +31,11 @@ log = logging.getLogger("admin.accounts")
 
 NOT_FOUND = "🚫 រកមិនឃើញគណនីនេះក្នុងវិសាលភាពរបស់អ្នក"
 
+
 HOWTO = (
     "📱 <b>បន័ែមគណនី</b> — វាយ <code>/addsession</code>\n\n"
     "១. ដាក់ <code>TG_API_ID</code> + <code>TG_API_HASH</code> (App របស់បងពី\n"
-    "   <b>my.telegram.org → API development tools</b>) និង <code>SESSION_FERNET_KEY</code>"
+    "   <b>my.telegram.org/apps → API development tools</b>) និង <code>SESSION_FERNET_KEY</code>"
     " ក្នុង <code>.env</code> រួច restart bot\n"
     "២. បង្កើត Session String ដោយប្រើ API ID និង API Hash របស់អ្នក\n"
     "៣. ផ្ញើ Session String ទៅ Bot តាម <code>/addsession</code>\n"
@@ -44,6 +46,31 @@ HOWTO = (
     "⚠️ កុំប្រើ Session String របស់គណនីដែលអ្នក<b>មិន</b>កាន់កាប់។\n"
     "ℹ️ បោះបង់ពេលណាក៏បានដោយ <code>/cancel</code>។"
 )
+
+
+def _session_web_hint(format_type: str = "html") -> str:
+    """តំណទៅគេហទំព័រ Make Session (session_web/) — ទទេ ពេល URL មិនចាប់ផ្តើមដោយ http
+    (មិនទាន់ deploy ឬម្ចាស់បិតតំណដោយដាក់ `SESSION_WEB_URL=off`)។
+
+    ហៅពេល handler ជំនួសពេល import ព្រោះ test អាច rebind `config.settings` ហើយ
+    URL ពិតប្រាកដដឹងតែក្រោយ `vercel --prod`។ format_type = "html" សម្រាប់ HOWTO,
+    "markdown" សម្រាប់ /addsession (parse_mode របស់សារនីមួយៗខុសគ្នា)។
+    """
+    url = (settings.session_web_url or "").strip()
+    if not url.startswith("http"):
+        return ""
+    if format_type == "html":
+        return (
+            "\n\n🌐 <b>ដើម្បីងាយស្រួល</b> — បង្កើត Session String តាម Web App:\n"
+            f'<a href="{esc(url)}">{esc(url)}</a>\n'
+            "បន្ទាប់មក ចម្លង Session String មកផ្ញើទីនេះ។"
+        )
+    return (
+        "\n\n🌐 **ដើម្បីងាយស្រួល** — បង្កើត Session String តាម Web App:\n"
+        f"{url}\n"
+        "បន្ទាប់មក ចម្លង Session String មកផ្ញើទីនេះ។"
+    )
+
 
 class LoginStates(StatesGroup):
     # OTP states disabled - only session string used
@@ -152,7 +179,12 @@ async def cb_howto(callback: CallbackQuery, scope: Scope) -> None:
     if callback.message is None:
         await callback.answer()
         return
-    await callback.message.edit_text(HOWTO, reply_markup=keyboards.accounts_menu([], scope))
+    await callback.message.edit_text(
+        HOWTO + _session_web_hint("html"),
+        reply_markup=keyboards.accounts_menu([], scope),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
     await callback.answer()
 
 
@@ -236,7 +268,9 @@ async def cmd_add_session(message: Message, state: FSMContext, scope: Scope) -> 
         "4. បង្កើតកម្មវិធីថ្មីមួយ (ត្រង់ App title និង Short name អ្នកអាចបំពេញឈ្មោះអ្វីក៏បានតាមចិត្ត)។\n"
         "5. ចម្លង (Copy) ទុក **API ID** និង **API Hash** របស់អ្នក (សូមរក្សាវាជាការសម្ងាត់បំផុត)។\n\n"
         "**ជំហានទី ២៖ បង្កើត Session String**\n"
-        "យក API ID និង API Hash ដែលអ្នកទើបបានមកបំពេញក្នុងឧបករណ៍បង្កើត Session String ដើម្បីទទួលបានកូដវែងនោះ។\n\n"
+        "យក API ID និង API Hash ដែលអ្នកទើបបានមកបំពេញក្នុងឧបករណ៍បង្កើត Session String ដើម្បីទទួលបានកូដវែងនោះ។"
+        + _session_web_hint("markdown")
+        + "\n\n"
         "📤 **បន្ទាប់មក សូមផ្ញើ Session String នោះមកទីនេះភ្លាម។**\n\n"
         "⚠️ **សារនេះនឹងត្រូវលុបភ្លាម បន្ទាប់ពីអាន**\n"
         "🔒 **Session String នឹងត្រូវ Encrypt + Save ក្នុង DB ដោយស្វ័យប្រវត្តិ**\n\n"

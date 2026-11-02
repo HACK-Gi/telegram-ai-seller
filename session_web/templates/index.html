@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="km">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bot Auto Sell — Make Session</title>
+  <style>
+    :root { --bg:#0f1115; --card:#171a21; --line:#272b35; --fg:#e8edf4; --dim:#9aa5b4;
+            --ok:#2ecc71; --warn:#f1c40f; --err:#e74c3c; --accent:#3b82f6; }
+    * { box-sizing:border-box; }
+    body { margin:0; padding:24px 16px 64px; background:var(--bg); color:var(--fg);
+           font-family:"Noto Sans Khmer","Khmer OS",system-ui,-apple-system,"Segoe UI",sans-serif;
+           font-size:16px; line-height:1.7; }
+    main { max-width:640px; margin:0 auto; }
+    h1 { font-size:22px; margin:0 0 6px; }
+    .sub { color:var(--dim); font-size:14px; margin:0 0 20px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin:0 0 16px; }
+    label { display:block; font-size:14px; color:var(--dim); margin:14px 0 6px; }
+    label:first-of-type { margin-top:0; }
+    input { width:100%; padding:11px 12px; border-radius:10px; border:1px solid var(--line);
+            background:#0d0f14; color:var(--fg); font-size:15px; font-family:inherit; }
+    input:focus { outline:2px solid var(--accent); border-color:transparent; }
+    input:disabled { opacity:.55; }
+    .hint { font-size:13px; color:var(--dim); margin-top:5px; }
+    button { width:100%; margin-top:18px; padding:12px; border:0; border-radius:10px;
+             background:var(--accent); color:#fff; font-size:16px; font-weight:600; cursor:pointer;
+             font-family:inherit; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    button.ghost { background:#232834; }
+    .step[hidden] { display:none; }
+    .dot { display:inline-block; width:22px; height:22px; line-height:22px; text-align:center;
+           border-radius:50%; background:#232834; color:var(--dim); font-size:13px; margin-right:8px; }
+    .step h2 { font-size:16px; margin:0 0 4px; }
+    #status { margin-top:14px; padding:11px 12px; border-radius:10px; font-size:14px; display:none;
+              border:1px solid var(--line); word-break:break-word; }
+    #status.ok { display:block; border-color:rgba(46,204,113,.45); background:rgba(46,204,113,.10); }
+    #status.err { display:block; border-color:rgba(231,76,60,.45); background:rgba(231,76,60,.10); }
+    #status.info { display:block; background:rgba(154,165,180,.08); }
+    textarea { width:100%; min-height:130px; margin-top:8px; padding:11px 12px; border-radius:10px;
+               border:1px solid var(--line); background:#0d0f14; color:var(--fg);
+               font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; word-break:break-all; }
+    ol.rules { margin:0; padding-left:20px; font-size:14px; color:var(--dim); }
+    a { color:var(--accent); }
+    footer { color:var(--dim); font-size:13px; text-align:center; margin-top:8px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>🔐 Bot Auto Sell — Make Session</h1>
+  <p class="sub">បង្កើត <strong>Telegram Session String</strong> រួចចម្លងទៅផ្ញើ Bot តាម <code>/addsession</code>។</p>
+
+  <div class="card">
+    <h2 style="font-size:15px;margin:0 0 8px;">ត្រូវការអ្វីខ្លះ?</h2>
+    <ol class="rules">
+      <li>ទៅ <a href="https://my.telegram.org/apps" target="_blank" rel="noreferrer">my.telegram.org/apps</a>
+          (log in ដោយលេខទូរស័ព្ទរបស់អ្នក) → ចម្លង <strong>API ID</strong> និង <strong>API Hash</strong>។</li>
+      <li>បិទ <em>Two-Step Verification</em> ជាមុនសិន បើចាប់បរាជ័យ — ឬប្រើប៊ូតុង «លុក» ខាងក្រោម។</li>
+      <li>រង់ចាំ SMS របស់ Telegram (កូដ ៥–៦ ខ្ទង់)។</li>
+    </ol>
+  </div>
+
+  <div class="card step" id="step-creds">
+    <h2><span class="dot">១</span>ព័ត៌មានគណនី</h2>
+    <label for="api_id">API ID</label>
+    <input id="api_id" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="27616997">
+    <label for="api_hash">API Hash</label>
+    <input id="api_hash" autocomplete="off" spellcheck="false" maxlength="32" placeholder="0123456789abcdef0123456789abcdef">
+    <div class="hint">Hex ៣២ តួអក្សរ — មិនមែនលេខទូរស័ព្ទទេ។</div>
+    <label for="phone">លេខទូរស័ព្ទ</label>
+    <input id="phone" inputmode="tel" autocomplete="off" spellcheck="false" placeholder="093251670 ឬ +85593251670">
+    <button id="btn-send">ផ្ញើ OTP</button>
+  </div>
+
+  <div class="card step" id="step-otp" hidden>
+    <h2><span class="dot">២</span>កូដ OTP</h2>
+    <label for="otp">កូដពី Telegram (មិនមែន SMS របស់អ្នកផ្សេងទេ)</label>
+    <input id="otp" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="8" placeholder="12345">
+    <button id="btn-verify">ផ្ទៀងផ្ទាត់</button>
+    <button id="btn-restart" class="ghost">មិនបានកូដ? ចាប់ផ្តើមឡើងវិញ</button>
+  </div>
+
+  <div class="card step" id="step-2fa" hidden>
+    <h2><span class="dot">២b</span>ពាក្យសម្ងាត់ 2FA</h2>
+    <label for="password">គណនីនេះមាន Two-Step Verification</label>
+    <input id="password" type="password" autocomplete="off" spellcheck="false" placeholder="ពាក្យសម្ងាត់ 2FA">
+    <button id="btn-password">ផ្ទៀងផ្ទាត់ 2FA</button>
+  </div>
+
+  <div class="card step" id="step-done" hidden>
+    <h2><span class="dot">៣</span>Session String របស់អ្នក</h2>
+    <textarea id="session" readonly spellcheck="false"></textarea>
+    <button id="btn-copy">ចម្លង</button>
+    <button id="btn-again" class="ghost">បង្កើតថ្មី</button>
+    <div class="hint">ចម្លងទាំងអស់ (ចាប់ផ្តើមដោយលេខ <strong>1</strong>) រួចផ្ញើទៅ Bot តាម <code>/addsession</code>។
+      គេហទំព័រមិនរក្សាទុកវាទេ — បិទ tab គឺបាត់។</div>
+  </div>
+
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <footer>🔒 គ្មាន Database · គ្មាន Log · គ្មាន Session រក្សាទុក · TTL {{ ttl_minutes }} នាទី</footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const steps = ["step-creds", "step-otp", "step-2fa", "step-done"];
+let requestId = "";
+
+function showStep(id) {
+  steps.forEach((s) => { $(s).hidden = s !== id; });
+}
+
+function setStatus(kind, text) {
+  const box = $("status");
+  box.className = kind;
+  box.textContent = text;
+  if (kind === "ok") box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function clearStatus() {
+  const box = $("status");
+  box.className = "";
+  box.textContent = "";
+  box.style.display = "none";
+}
+
+async function post(url, payload) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* HTML error page */ }
+  if (!data) throw new Error("ការឆ្លើយតបមិនត្រឹមត្រូវពី server (HTTP " + res.status + ")");
+  return data;
+}
+
+function busy(btn, on, label) {
+  if (on) { btn.dataset.label = btn.textContent; btn.disabled = true; btn.textContent = label || "កំពុងធ្វើការ…"; }
+  else { btn.disabled = false; btn.textContent = btn.dataset.label || label; }
+}
+
+$("btn-send").addEventListener("click", async () => {
+  clearStatus();
+  const btn = $("btn-send");
+  busy(btn, true, "កំពុងផ្ញើ…");
+  try {
+    const data = await post("/send_otp", {
+      api_id: $("api_id").value.trim(),
+      api_hash: $("api_hash").value.trim(),
+      phone: $("phone").value.trim(),
+    });
+    if (data.status === "code_sent") {
+      requestId = data.request_id;
+      $("otp").value = "";
+      showStep("step-otp");
+      setStatus("info", "Telegram បានផ្ញើកូដទៅលេខទូរស័ព្ទរបស់អ្នក — សូមវាយកូដខាងលើ។");
+      $("otp").focus();
+    } else {
+      setStatus("err", data.message || "មិនអាចផ្ញើ OTP បានទេ");
+    }
+  } catch (e) {
+    setStatus("err", e.message);
+  } finally {
+    busy(btn, false, "ផ្ញើ OTP");
+  }
+});
+
+async function verify(password) {
+  clearStatus();
+  if (!requestId) { setStatus("err", "សំណើផុតកំណត់ — សូមសុំ OTP ថ្មី"); return; }
+  const btn = password !== null ? $("btn-password") : $("btn-verify");
+  busy(btn, true, "កំពុងផ្ទៀងផ្ទាត់…");
+  try {
+    const data = await post("/verify_otp", {
+      request_id: requestId,
+      otp: password === null ? $("otp").value.trim() : "",
+      password: password === null ? "" : password,
+    });
+    if (data.status === "ok") {
+      requestId = "";
+      $("session").value = data.session_string;
+      showStep("step-done");
+      setStatus("ok", "✅ ជោគជ័យ! ចម្លង Session String ទៅផ្ញើ Bot តាម /addsession។");
+      $("session").focus();
+      $("session").select();
+    } else if (data.status === "2fa_required") {
+      requestId = data.request_id;
+      $("password").value = "";
+      showStep("step-2fa");
+      setStatus("info", "គណនីនេះមាន 2FA — សូមវាយពាក្យសម្ងាត់ Two-Step Verification។");
+      $("password").focus();
+    } else if (data.restart) {
+      requestId = "";
+      showStep("step-creds");
+      setStatus("err", (data.message || "បរាជ័យ") + " — សូមសុំ OTP ថ្មី។");
+    } else {
+      if (data.request_id) requestId = data.request_id;
+      setStatus("err", data.message || "កូដមិនត្រឹមត្រូវ");
+      $("otp").select();
+    }
+  } catch (e) {
+    setStatus("err", e.message);
+  } finally {
+    busy(btn, false, password === null ? "ផ្ទៀងផ្ទាត់" : "ផ្ទៀងផ្ទាត់ 2FA");
+  }
+}
+
+$("btn-verify").addEventListener("click", () => verify(null));
+$("btn-password").addEventListener("click", () => verify($("password").value));
+
+$("btn-restart").addEventListener("click", () => {
+  requestId = "";
+  clearStatus();
+  showStep("step-creds");
+});
+
+$("btn-copy").addEventListener("click", async () => {
+  const value = $("session").value;
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (e) {
+    $("session").focus();
+    $("session").select();
+    document.execCommand("copy");
+  }
+  setStatus("ok", "បានចម្លង! បើក Telegram រួចវាយ /addsession ហើយបិទក្រដាស (paste) នៅទីនោះ។");
+});
+
+$("btn-again").addEventListener("click", () => {
+  ["api_id", "api_hash", "phone", "otp", "password", "session"].forEach((id) => { $(id).value = ""; });
+  requestId = "";
+  clearStatus();
+  showStep("step-creds");
+});
+
+// កុំឱ្យព័ត៌មានសម្ងាត់សល់ក្នុង autofill របស់ browser
+window.addEventListener("pagehide", () => {
+  ["api_hash", "otp", "password", "session"].forEach((id) => { const el = $(id); if (el) el.value = ""; });
+});
+</script>
+
+</body>
+</html>

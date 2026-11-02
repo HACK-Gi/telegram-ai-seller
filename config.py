@@ -17,6 +17,10 @@ BACKUP_DIR = BASE_DIR / "backups"
 LOG_DIR = BASE_DIR / "logs"
 SESSION_DIR = BASE_DIR / "data" / "sessions"
 
+# គេហទំព័រ «Make Session» (session_web/) — ភ្ញៀវបង្កើត Session String ខ្លួនឯង មុនផ្ញើមក
+# /addsession។ កែតាម SESSION_WEB_URL; ដាក់វត្ថុដែលមិនចាប់ផ្តើមដោយ http = លាក់តំណ។
+DEFAULT_SESSION_WEB_URL = "https://bot-auto-sell-make-session.vercel.app"
+
 for _d in (PRODUCT_MEDIA_DIR, QR_MEDIA_DIR, BACKUP_DIR, LOG_DIR, SESSION_DIR, MEDIA_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
@@ -78,6 +82,7 @@ class Settings:
     working_hours: str
     stock_alert_threshold: int
     language: str
+    session_web_url: str
 
     def is_owner(self, user_id: int) -> bool:
         return user_id == self.owner_id
@@ -117,6 +122,7 @@ def _load() -> Settings:
         working_hours=(os.getenv("WORKING_HOURS") or "08:00-23:00").strip(),
         stock_alert_threshold=_int("STOCK_ALERT_THRESHOLD", 5),
         language=(os.getenv("LANGUAGE") or "km").strip().lower(),
+        session_web_url=(os.getenv("SESSION_WEB_URL") or DEFAULT_SESSION_WEB_URL).strip(),
     )
 
 
