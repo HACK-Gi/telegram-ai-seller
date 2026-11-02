@@ -59,8 +59,9 @@ def make_client(
     ពេល login (chat/CLI) ដូចគ្នានឹងពេល manager ភ្ជាប់រាល់ពេល reconnect — បើប្តូរ
     Telegram ឃើញ «device ថ្មី» រាល់ដងដែល reconnect ដែលជា signal នៃ bot farm។
 
-    `api_id`/`api_hash` ជារបស់គណនីនេះ (មើល `userbot.credentials.resolve`) — auth key
-    ត្រូវបានចងនឹង App ដែលបង្កើតវា ដូច្នេះការប្តូរ App ធ្វើឱ្យ session ប្រើមិនបាន។"""
+    `api_id`/`api_hash` មកពី `.env` (មើល `userbot.credentials.resolve`) — Telegram ចង auth
+    key នឹង App ដែលបង្កើតវា ដូច្នេះការប្តូរ App (ឬលុប App ចាស់) ធ្វើឱ្យ session ទាំងអស់
+    ដែល login ដោយ App ចាស់ប្រើមិនបាន ហើយត្រូវ login ឡើងវិញ។"""
     index = device_index if device_index is not None else account_id
     device, system, version = DEVICE_POOL[index % len(DEVICE_POOL)]
     return TelegramClient(
@@ -69,9 +70,8 @@ def make_client(
         api_hash,
         device_model=device,
         system_version=system,
-        application_version=version,
+        app_version=version,
         lang_code="km",
-        request_timeout=30,
         auto_reconnect=True,
         connection_retries=4,
     )
@@ -164,11 +164,11 @@ class AccountManager:
     async def start_client(self, account) -> bool:
         if account.id in self._clients:
             return True
-        creds = credentials.resolve(account)
+        creds = credentials.resolve()
         if creds is None:
             message = (
-                "គ្មាន api_id/api_hash — បន្ថែមគណនីនេះឡើងវិញតាម /addaccount "
-                "(App ពី my.telegram.org)"
+                "គ្មាន TG_API_ID/TG_API_HASH ក្នុង .env — ដាក់ App credentials ពី"
+                " my.telegram.org រួច restart bot"
             )
             async with db_session() as db:
                 await crud.set_account_status(db, account.id, AccountStatus.OFFLINE, message)

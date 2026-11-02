@@ -106,7 +106,12 @@ def khmer_error(exc: BaseException) -> str:
                 hint = text
                 break
     if hint is None:
-        hint = "មានកំហុសពី Telegram"
+        # កំហុសក្រៅ RPC (TypeError, AttributeError…) = កូដរបស់យើង មិនមែន Telegram ទេ
+        # — ប្រាប់ច្បាស់ ដើម្បីកុំឱ្យអ្នកប្រើទៅរក my.telegram.org ដោយខុសកន្លែង
+        if not type(exc).__module__.startswith("telethon.errors"):
+            hint = "កំហុសក្នុងប្រព័ន្ធរបស់យើង មិនមែនពី Telegram — សូមមើល log"
+        else:
+            hint = "មានកំហុសពី Telegram"
     if name == "FloodWaitError":
         seconds = getattr(exc, "seconds", None)
         if isinstance(seconds, int):
@@ -186,9 +191,8 @@ def _client_for(device_index: int, api_id: int, api_hash: str) -> Any:
         api_hash,
         device_model=device,
         system_version=system,
-        application_version=version,
+        app_version=version,
         lang_code="km",
-        request_timeout=30,
     )
 
 
@@ -216,17 +220,21 @@ class LoginCoordinator:
         chat_id: int,
         user_id: int,
         phone: str,
-        api_id: int,
-        api_hash: str,
         name: str,
         channel: LoginChannel,
     ) -> str | None:
-        """ត្រឡប់សារកំហុស (ខ្មែរ) ឬ None = ទទួលបាន OTP flow។"""
+        """ត្រឡប់សារកំហុស (ខ្មែរ) ឬ None = ទទួលបាន OTP flow។
+
+        `api_id`/`api_hash` មិនដែលមកពី chat ទេ — អានពី `.env` ហើយ validate ជា `int`/hex
+        ៣២ តួ មុនបង្កើត Telethon client ទើបកំហុសទ្រង់ទ្រាយបែកនៅទីនេះ មិនមែនកណ្តាល login។
+        """
         ok, message = session_store.key_status()
         if not ok:
             return f"🔐 {message}"
-        if not api_id or not api_hash:
-            return "🚫 ខ្វះ api_id ឬ api_hash របស់ App នេះ — ចាប់ផ្តើម /addaccount ឡើងវិញ"
+        creds = credentials.resolve()
+        if creds is None:
+            return credentials.missing_credentials_message()
+        api_id, api_hash = creds
         normalized = normalize_phone(phone)
         if normalized is None:
             return (
@@ -388,7 +396,21 @@ class LoginCoordinator:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
-            log.warning("chat login កំហុស (admin=%s): %s", entry.user_id, describe_error(exc))
+            # កំហុសដែលមិនមែន RPC (TypeError/AttributeError…) គឺកំហុសកូដ មិនមែន Telegram ទេ
+            # — បង្ហាញ file:line ដែលវាផ្ទុះ ជំនួសឱ្យ «មានកំហុសពី Telegram» ដែលរកមិនឃើញ។
+            # traceback ពេញលេញឆ្លងកាត់ SecretRedactor រួច (គ្មាន OTP/លេខទូរស័ព្ទក្នុង frame lines)
+            where = "?"
+            tb = exc.__traceback__
+            while tb is not None:
+                where = f"{tb.tb_frame.f_code.co_filename.split('/')[-1]}:{tb.tb_lineno}"
+                tb = tb.tb_next
+            log.warning(
+                "chat login កំហុស (admin=%s): %s at %s",
+                entry.user_id,
+                describe_error(exc),
+                where,
+                exc_info=True,
+            )
             await entry.channel.result(False, f"❌ ចុះឈ្មោះបរាជ័យ — {khmer_error(exc)}")
         finally:
             await self._cleanup(entry)
@@ -408,11 +430,9 @@ class LoginCoordinator:
     async def _persist(self, entry: PendingLogin, *, token: str, me: Any) -> int:
         """បង្កើត/កែ Account row ក្រោយ auth ជោគជ័យតែប៉ុណ្ណោះ (D2: enabled=True)។
 
-        `api_id`/`api_hash` ត្រូវ encrypt ជាមួយ session ក្នុង transaction តែមួយ — បើញែកគ្នា
-        ការបរាជ័យកណ្តាលអាចទុក session ដែល reconnect មិនបាន (គ្មាន App ត្រូវគ្នា)។
+        រក្សាទុកតែ session string (Fernet) — `api_id`/`api_hash` នៅក្នុង `.env` ជានិច្ច
+        ដូច្នេះគ្មាន secret របស់ App ត្រួតពិនិត្យលើ DB/chat/log ទេ។
         """
-        api_id_token = credentials.encrypt_credential(str(entry.api_id))
-        api_hash_token = credentials.encrypt_credential(entry.api_hash)
         async with db_session() as session:
             existing = await session.scalar(select(Account).where(Account.phone == entry.phone))
             if existing is not None:
@@ -425,8 +445,6 @@ class LoginCoordinator:
                         session_encrypted=token,
                         device_index=entry.device_index,
                         name=entry.name or existing.name,
-                        tg_api_id_encrypted=api_id_token,
-                        tg_api_hash_encrypted=api_hash_token,
                     )
                 )
                 return int(existing.id)
@@ -438,8 +456,6 @@ class LoginCoordinator:
                 owner_admin_id=entry.user_id,
                 enabled=True,
                 device_index=entry.device_index,
-                tg_api_id_encrypted=api_id_token,
-                tg_api_hash_encrypted=api_hash_token,
             )
             await crud.record_account_identity(
                 session,

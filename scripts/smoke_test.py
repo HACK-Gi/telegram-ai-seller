@@ -73,9 +73,11 @@ class Recorder(logging.Handler):
     def __init__(self) -> None:
         super().__init__(level=logging.ERROR)
         self.records: list[str] = []
+        self.raw: list[logging.LogRecord] = []
 
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(f"{record.name}: {record.getMessage()}")
+        self.raw.append(record)
 
 
 class Panel:
@@ -119,93 +121,96 @@ class Panel:
         return not any(fragment in item for item in self.session.texts[mark:])
 
 
-async def wait_for_text_since(panel: Panel, mark: int, fragment: str, timeout: float = 3.0) -> bool:
-    """រង់ចាំសារថ្មី (ចាប់ពី `mark`) — login រត់ក្នុង Task ដាច់ពី handler។"""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if any(fragment in item for item in panel.session.texts[mark:]):
-            return True
-        await asyncio.sleep(0.02)
-    return any(fragment in item for item in panel.session.texts[mark:])
+# ---------- Fake Telethon — ចុះឈ្មោះ Session String ដោយគ្មានបណ្តាញ ----------
+# ចំណុចប្រទាក់ពិតរបស់ accounts.md_login_session:
+#   TelegramClient(StringSession(session_string), api_id, api_hash) → 3 positional args
+API_ID_ENV = 12345
+API_HASH_ENV = "0123456789abcdef0123456789abcdef"
+# Sentinel ដាច់គេ វែងជាង threshold ៥០ និងចាប់ផ្តើមដោយលេខ ដូច StringSession ពិត
+SESSION_A = "1" + "A" * 249
+SESSION_B = "2" + "B" * 249
+LOGIN_PHONE = "+85512777000"
 
 
-# ---------- Fake Telethon client — chat login ដោយគ្មានបណ្តាញ ----------
-class SessionPasswordNeededError(Exception):
-    """ឈ្មោះ class ត្រូវដូច Telethon — chat_login dispatch តាម `type(exc).__name__`។"""
+class AuthKeyUnregisteredError(Exception):
+    """ឈ្មោះ class ត្រូវដូច Telethon — សារបរាជ័យបញ្ចេញតែ `type(exc).__name__`។"""
 
 
-class PhoneCodeInvalidError(Exception):
-    pass
+class _FakeStringSession:
+    """កុំ allow Telethon decode តម្លៃក្លែងក្លាយ ហើយចាំ input ដើមដើម្បីវាស់។"""
 
+    seen: list[str] = []
 
-class _FakeSession:
-    def save(self) -> str:
-        return "1FAKESESSION" + "X" * 120
-
-
-class _FakeSent:
-    phone_code_hash = "FAKE-CODE-HASH"
+    def __init__(self, value: str = "") -> None:
+        _FakeStringSession.seen.append(value)
+        self.value = value
 
 
 class _FakeMe:
-    id = 777000999
-    username = "smoke_login"
-    first_name = "Smoke"
-    last_name = "Login"
+    def __init__(self, phone: str) -> None:
+        self.id = 777000999
+        self.phone = phone
+        self.username = "smoke_login"
+        self.first_name = "Smoke"
+        self.last_name = "Login"
 
 
 class FakeClient:
-    def __init__(self, *, need_2fa: bool = False, reject_code: str = "") -> None:
-        self.session = _FakeSession()
-        self.need_2fa = need_2fa
-        self.reject_code = reject_code
-        self.codes: list[str] = []
-        self.passwords: list[str] = []
+    """ក្លែង TelegramClient តាម `mode` — គ្រប់សាขារបស់ md_login_session។"""
+
+    mode = "ok"          # ok | unauthorized | no_me | auth_revoked
+    phone = LOGIN_PHONE
+    built: list["FakeClient"] = []
+
+    def __init__(self, session, api_id, api_hash) -> None:
+        self.session = session
+        self.creds = (api_id, api_hash)
         self.disconnected = False
+        FakeClient.built.append(self)
+
+    @classmethod
+    def reset(cls, mode: str = "ok", *, phone: str = LOGIN_PHONE) -> None:
+        cls.mode = mode
+        cls.phone = phone
+        cls.built.clear()
+        _FakeStringSession.seen.clear()
+
+    @classmethod
+    def last(cls) -> "FakeClient":
+        return cls.built[-1]
 
     async def connect(self) -> bool:
+        if self.mode == "auth_revoked":
+            raise AuthKeyUnregisteredError("auth key unregistered")
         return True
 
-    async def send_code_request(self, phone: str) -> _FakeSent:
-        return _FakeSent()
-
-    async def sign_in(self, *, phone=None, code=None, phone_code_hash=None, password=None):
-        if code is not None:
-            self.codes.append(code)
-            if code == self.reject_code:
-                raise PhoneCodeInvalidError("invalid")
-            if self.need_2fa:
-                raise SessionPasswordNeededError("2fa")
-            return True
-        self.passwords.append(password)
-        return True
-
-    async def get_me(self) -> _FakeMe:
-        return _FakeMe()
+    async def get_me(self):
+        return None if self.mode == "no_me" else _FakeMe(self.phone)
 
     async def is_user_authorized(self) -> bool:
-        return True
+        return self.mode != "unauthorized"
 
     async def disconnect(self) -> None:
         self.disconnected = True
 
 
-class FakeClientFactory:
-    def __init__(self, **kwargs) -> None:
-        self.kwargs = kwargs
-        self.instances: list[FakeClient] = []
-        self.creds: list[tuple[int, str]] = []
+class FakeManager:
+    """ជំនួស AccountManager — វាស់តែថា addsession ជោគជ័យហើយ userbot ត្រូវ hot-reload។"""
 
-    def __call__(self, device_index: int, api_id: int, api_hash: str) -> FakeClient:
-        self.creds.append((api_id, api_hash))
-        client = FakeClient(**self.kwargs)
-        self.instances.append(client)
-        return client
+    def __init__(self) -> None:
+        self.reconciled = 0
 
-    @property
-    def last(self) -> FakeClient:
-        return self.instances[-1]
+    async def reconcile(self) -> None:
+        self.reconciled += 1
+
+
+def install_fake_telethon() -> None:
+    """accounts.py វាយ `from telethon import TelegramClient` ក្នុង function → patch តែ module attribute។"""
+    import telethon
+    from telethon import sessions as telethon_sessions
+
+    telethon.TelegramClient = FakeClient
+    telethon_sessions.StringSession = _FakeStringSession
 
 
 async def main() -> int:
@@ -636,141 +641,195 @@ async def main() -> int:
     await panel.cb(f"prod:view:{staff_product_id}", user_id=OWNER)
     expect("Owner ឃើញផលិតផល staff", panel.said_since(mark, "Staff Key ONLY"))
 
-    print("— Chat Login — /addaccount + OTP auto-delete + 2FA + /cancel —")
-    from sqlalchemy import select as _select
+    print("— ចុះឈ្មោះគណនី — Session String (OTP login ត្រូវបានលុបចោល) —")
+    import dataclasses
 
+    import config
+    from admin_bot.handlers import accounts as accounts_handlers
     from database.models import Account as _Account
-    from userbot import chat_login, session_store
+    from sqlalchemy import select as _select
+    from userbot import manager as manager_module
+    from userbot import session_store
+
+    install_fake_telethon()
 
     async def fetch_account(phone: str):
         async with db_session() as session:
             return await session.scalar(_select(_Account).where(_Account.phone == phone))
 
-    def use_coordinator(**kwargs) -> FakeClientFactory:
-        factory = FakeClientFactory(**kwargs)
-        chat_login.reset_coordinator()
-        chat_login._coordinator = chat_login.LoginCoordinator(client_factory=factory)  # noqa: SLF001
-        return factory
+    async def account_count(phone: str) -> int:
+        async with db_session() as session:
+            return len((await session.scalars(_select(_Account).where(_Account.phone == phone))).all())
 
-    # តម្លៃដាច់គេ — បើជាលេខធម្មតា វានឹងឃើញ «លេច» ក្នុងឧទាហរណ៍/លេខផ្សេង ហើយការតេស្តក្លាយជាកុហក
-    API_ID = "3141592"
-    API_HASH = "0123456789abcdef0123456789abcdef"
+    async def add_session(user_id: int = STAFF) -> None:
+        await panel.msg("/addsession", user_id=user_id)
 
-    async def start_login(phone: str) -> None:
-        """`/addaccount` → api_id → api_hash ដល់ចំនុចដែល Bot ផ្ញើ OTP។"""
-        await panel.msg(f"/addaccount {phone}", user_id=STAFF, expect_reply=False)
-        await panel.msg(API_ID, user_id=STAFF, expect_reply=False)
-        await panel.msg(API_HASH, user_id=STAFF, expect_reply=False)
+    # ១) OTP លុបចេញពី code មែន ឬ — រចនាសម្ព័ន្ធ (កុំឱ្យ FSM ចាស់ត្រឡប់មកវិញដោយស្ងាត់)
+    expect("Session FSM មាន waiting_session", hasattr(accounts_handlers.LoginStates, "waiting_session"))
+    expect(
+        "OTP FSM states ត្រូវបានលុប (waiting_phone/code/password មិនមាន)",
+        not any(
+            hasattr(accounts_handlers.LoginStates, name)
+            for name in ("waiting_phone", "waiting_code", "waiting_password")
+        ),
+    )
+    expect(
+        "គ្មាន OTP handler ក្នុង accounts (md_login_code/md_login_password/_begin_login)",
+        not any(
+            hasattr(accounts_handlers, name)
+            for name in ("md_login_code", "md_login_password", "_begin_login", "login_key")
+        ),
+    )
+
+    # ២) ទ្វារចូលចាស់ → បញ្ជូនទៅ Session String តែប៉ុណ្ណោះ
+    mark = panel.mark()
+    await panel.msg(f"/addaccount {LOGIN_PHONE}", user_id=STAFF)
+    expect("/addaccount → បង្ហាញសារណែនាំឱ្យប្រើ /addsession", panel.said_since(mark, "សូមប្រើ Session String"))
+    expect("/addaccount → OTP login ត្រូវបានបិទ", panel.said_since(mark, "OTP login ត្រូវបានបិទ"))
+    expect("/addaccount មិនបង្ហាញ OTP FSM", panel.says_not_since(mark, "កូដ OTP"))
 
     mark = panel.mark()
-    await panel.msg("/addaccount 12abc", user_id=STAFF)
-    expect("លេខខុស → បដិសេធ", panel.said_since(mark, "លេខទូរស័ព្ទខុសទ្រង់ទ្រាយ"))
+    sent_mark = len(panel.session.sent)
+    await panel.cb("acc:add")
+    expect("acc:add មាន handler ទទួល (answerCallbackQuery ប៉ុណ្ណោះ)",
+           "answerCallbackQuery" in panel.session.sent[sent_mark:] and panel.says_not_since(mark, "កូដ OTP"))
 
-    # api_id / api_hash — validation + auto-delete
-    factory = use_coordinator()
+    # ៣) /addsession → ការណែនាំ Session String
     mark = panel.mark()
-    phone_mark = len(panel.session.sent)
-    await panel.msg("/addaccount +85512777009", user_id=STAFF, expect_reply=False)
-    expect("សារលេខទូរស័ព្ទត្រូវលុប", "deleteMessage" in panel.session.sent[phone_mark:])
-    expect("ណែនាំទៅ my.telegram.org", await wait_for_text_since(panel, mark, "my.telegram.org"))
-    await panel.msg("12ab", user_id=STAFF, expect_reply=False)
-    expect("api_id ខុស → បដិសេធ", panel.said_since(mark, "api_id មិនត្រឹមត្រូវ"))
-    api_mark = len(panel.session.sent)
-    await panel.msg(API_ID, user_id=STAFF, expect_reply=False)
-    expect("សារ api_id ត្រូវលុប", "deleteMessage" in panel.session.sent[api_mark:])
-    expect("សួរ api_hash", panel.said_since(mark, "App api_hash"))
-    await panel.msg("abcd", user_id=STAFF, expect_reply=False)
-    expect("api_hash ខុស → បដិសេធ", panel.said_since(mark, "api_hash មិនត្រឹមត្រូវ"))
-    expect("គ្មាន OTP មុន api_hash ត្រឹមត្រូវ", panel.says_not_since(mark, "កូដ OTP"))
+    await add_session()
+    expect("/addsession → បង្ហាញការណែនាំ Session String", panel.said_since(mark, "Session String"))
+    expect("/addsession → ណែនាំ my.telegram.org", panel.said_since(mark, "my.telegram.org"))
+    expect("/addsession → រំលឹកសារ Auto-delete", panel.said_since(mark, "សារនេះនឹងត្រូវលុបភ្លាម"))
+    expect("/addsession → រំលឹក Encrypt + Save", panel.said_since(mark, "Encrypt + Save"))
+
+    mark = panel.mark()
+    await panel.cb("acc:howto")
+    expect("acc:howto → api_hash មិនដែលវាយតាម chat", panel.said_since(mark, "api_hash មិនដែលវាយតាម chat"))
+
+    mark = panel.mark()
     await panel.msg("/cancel", user_id=STAFF)
-    expect("/cancel ពេលនៅ api_hash → គ្មាន pending", not chat_login.get_coordinator().has_pending(STAFF, STAFF))
+    expect("/cancel បោះបង់ waiting_session", panel.said_since(mark, "បានបោះបង់"))
 
-    factory = use_coordinator()
-    login_phone = "+85512777000"
-    otp = "741852"
+    # ៤) បដិសេធតាមទ្រង់ទ្រាយ — លុបសារមុន validate ជានិច្ច
+    FakeClient.reset()
     mark = panel.mark()
-    secrets_mark = len(panel.session.sent)
-    await start_login(login_phone)
-    expect("OTP ត្រូវសួរ", await wait_for_text_since(panel, mark, "កូដ OTP"))
-    expect("api_id/api_hash ផ្ញើទៅ client", factory.creds == [(int(API_ID), API_HASH)])
-    deleted = [item for item in panel.session.sent[secrets_mark:] if "deleteMessage" in item]
-    expect("សារ phone/api_id/api_hash ត្រូវលុប ៣", len(deleted) >= 3)
-    expect("coordinator មាន pending", chat_login.get_coordinator().has_pending(STAFF, STAFF))
-    api_mark = len(panel.session.sent)
-    await panel.msg(otp, user_id=STAFF, expect_reply=False)
-    expect("សារ OTP ត្រូវលុបភ្លាម", "deleteMessage" in panel.session.sent[api_mark:])
-    expect("OTP មិនដែលចេញជាសារ Bot", panel.says_not_since(0, otp))
-    done = await wait_for_text_since(panel, mark, "ភ្ជាប់រួច")
-    expect("login ជោគជ័យ → ជូនដំណឹង", done)
-    logged = await fetch_account(login_phone)
+    sent_mark = len(panel.session.sent)
+    await add_session()
+    await panel.msg("1short-session", user_id=STAFF)
+    expect("Session ខ្លី (< 50 តួ) → បដិសេធ", panel.said_since(mark, "Session String ខុសទ្រង់ទ្រាយ"))
+    expect("Session ខុសទ្រង់ទ្រាយ → សារត្រូវលុប", "deleteMessage" in panel.session.sent[sent_mark:])
+    expect("Session ខុសទ្រង់ទ្រាយ → មិនភ្ជាប់ client", not FakeClient.built)
+    mark = panel.mark()
+    await panel.msg("/menu", user_id=STAFF)
+    expect("Session ខុស → FSM ស្អាត (សារបន្ទាប់មិនត្រូវបានស៊ី)",
+           panel.says_not_since(mark, "Session String ខុសទ្រង់ទ្រាយ"))
+
+    mark = panel.mark()
+    await add_session()
+    await panel.msg("Z" * 200, user_id=STAFF)
+    expect("Session មិនចាប់ផ្តើមដោយលេខ → បដិសេធ", panel.said_since(mark, "Session String ខុសទ្រង់ទ្រាយ"))
+
+    # ៥) Session ភ្ជាប់បានតែមិន authorized / ខូច auth key → បដិសេធ + ណែនាំបង្កើតថ្មី
+    FakeClient.reset("unauthorized")
+    mark = panel.mark()
+    await add_session()
+    await panel.msg(SESSION_A, user_id=STAFF)
+    expect("Session មិន authorized → បដិសេធ", panel.said_since(mark, "មិនត្រឹមត្រូវ ឬផុតកំណត់"))
+    expect("Session ខូច → ណែនាំបង្កើតថ្មី (get_session.py)", panel.said_since(mark, "get_session.py"))
+    expect("Session ខូច → client ត្រូវ disconnect", FakeClient.last().disconnected)
+    expect("Session ខូច → គ្មាន Account row", await fetch_account(LOGIN_PHONE) is None)
+
+    FakeClient.reset("no_me")
+    mark = panel.mark()
+    await add_session()
+    await panel.msg(SESSION_A, user_id=STAFF)
+    expect("get_me() ទទេ → បដិសេធដូចគ្នា", panel.said_since(mark, "មិនត្រឹមត្រូវ ឬផុតកំណត់"))
+
+    # ៦) exception ពី Telegram (auth key ត្រូវបាន withdraw) → បដិសេធ ហើយ session មិនរសាត់ចូល log
+    #    recorder ត្រូវដកជាបណ្តោះអាសន្ន ព្រោះ ERROR គឺអ្វីដែលករណីនេះ «ចង់បាន»
+    root = logging.getLogger()
+    root.removeHandler(recorder)
+    sink = Recorder()
+    root.addHandler(sink)
+    FakeClient.reset("auth_revoked")
+    mark = panel.mark()
+    await add_session()
+    await panel.msg(SESSION_A, user_id=STAFF)
+    root.removeHandler(sink)
+    root.addHandler(recorder)
+    expect("Session ខូច (AuthKeyUnregistered) → បដិសេធ + បញ្ជាក់ប្រភេទកំហុស",
+           panel.said_since(mark, "❌ បរាជ័យ: AuthKeyUnregisteredError"))
+    expect("Session ខូច → គ្មាន row ក្រោយ exception", await fetch_account(LOGIN_PHONE) is None)
+    dumped = "\n".join(logging.Formatter("%(message)s").format(record) for record in sink.raw)
+    expect("Session String មិនត្រូវ log", SESSION_A not in dumped)
+    expect("Session String មិនត្រូវបង្ហាញក្នុង Panel/chat", panel.says_not_since(0, SESSION_A))
+
+    # ៧) api_id/api_hash អានពី .env តែប៉ុណ្ណោះ — ខ្វះ → និន្នាការមុន មិនភ្ជាប់
+    saved_settings = config.settings
+    config.settings = dataclasses.replace(saved_settings, tg_api_id=0, tg_api_hash="")
+    FakeClient.reset()
+    mark = panel.mark()
+    await add_session()
+    await panel.msg(SESSION_A, user_id=STAFF)
+    config.settings = saved_settings
+    expect(".env ខ្វះ credentials → បដិសេធ + ណែនាំ TG_API_ID", panel.said_since(mark, "TG_API_ID"))
+    expect(".env ខ្វះ → គ្មាន client ភ្ជាប់", not FakeClient.built)
+
+    # ៨) Session ត្រឹមត្រូវ → Encrypt + Save DB + hot-reload + បង្ហាញក្នុង /accounts
+    fake_manager = FakeManager()
+    manager_module._manager = fake_manager
+    FakeClient.reset()
+    mark = panel.mark()
+    sent_mark = len(panel.session.sent)
+    await add_session()
+    await panel.msg(SESSION_A, user_id=STAFF)
+    expect("Session ត្រឹមត្រូវ → ភ្ជាប់រួច", panel.said_since(mark, "✅ ភ្ជាប់រួច"))
+    expect("Session String ត្រូវ Auto-delete បន្ទាប់ពីអាន", "deleteMessage" in panel.session.sent[sent_mark:])
+    expect("StringSession ទទួល input ដើមតែមួយ", _FakeStringSession.seen == [SESSION_A])
+    expect("api_id/api_hash យកពី .env បញ្ជូនទៅ client", FakeClient.last().creds == (API_ID_ENV, API_HASH_ENV))
+    logged = await fetch_account(LOGIN_PHONE)
     expect("Account row ត្រូវបង្កើត", logged is not None)
+    logged_id = logged.id if logged else None
     if logged is not None:
         expect("គណនីជាប់នឹង staff (owner_admin_id)", logged.owner_admin_id == STAFF)
-        expect("session ក្នុង DB ជា ciphertext", "FAKESESSION" not in (logged.session_encrypted or ""))
-        expect("decrypt ត្រឡប់ session ដើម", session_store.decrypt(logged.session_encrypted).startswith("1FAKESESSION"))
-        from userbot import credentials as _credentials
-
-        expect("api_id ក្នុង DB ជា ciphertext", API_ID not in (logged.tg_api_id_encrypted or ""))
-        expect("api_hash ក្នុង DB ជា ciphertext", API_HASH not in (logged.tg_api_hash_encrypted or ""))
-        expect(
-            "decrypt creds ត្រឡប់ api_id/api_hash ដើម",
-            _credentials.stored_credentials(logged) == (int(API_ID), API_HASH),
-        )
-    expect("api_hash មិនដែលចេញជាសារ Bot", panel.says_not_since(mark, API_HASH))
-    expect("api_id មិនដែលចេញជាសារ Bot", panel.says_not_since(mark, API_ID))
-    expect("session string មិនដែលចេញ chat", panel.says_not_since(0, "FAKESESSION"))
-    expect("FakeClient ត្រូវ disconnect", factory.last.disconnected)
-
-    factory = use_coordinator(need_2fa=True)
-    password = "smoke-2fa-secret"
+        expect("session ចូល DB ជា ciphertext (Encrypt)",
+               (logged.session_encrypted or "").startswith("gAAAAA") and SESSION_A not in logged.session_encrypted)
+        expect("decrypt ត្រឡប់ session ដើម", session_store.decrypt(logged.session_encrypted) == SESSION_A)
+        expect("addsession មិនសរសេរ api_id/api_hash ចុះ row",
+               not (logged.tg_api_id_encrypted or logged.tg_api_hash_encrypted))
+    expect("api_hash មិនដែលបង្ហាញក្នុង chat", panel.says_not_since(0, API_HASH_ENV))
+    expect("client ត្រូវ disconnect ក្រោយ save", FakeClient.last().disconnected)
+    expect("បន្ទាប់ពី Save → userbot reconcile ចាប់ផ្តើមគណនី", fake_manager.reconciled == 1)
     mark = panel.mark()
-    await start_login(login_phone)
-    await wait_for_text_since(panel, mark, "កូដ OTP")
-    await panel.msg(otp, user_id=STAFF, expect_reply=False)
-    expect("2FA ត្រូវសួរ", await wait_for_text_since(panel, mark, "ផ្ញើពាក្យសម្ងាត់ Cloud"))
-    api_mark = len(panel.session.sent)
-    await panel.msg(password, user_id=STAFF, expect_reply=False)
-    expect("សារ 2FA ត្រូវលុបភ្លាម", "deleteMessage" in panel.session.sent[api_mark:])
-    expect("2FA មិនដែលចេញជាសារ Bot", panel.says_not_since(0, password))
-    expect("login 2FA ជោគជ័យ", await wait_for_text_since(panel, mark, "ភ្ជាប់រួច"))
-    expect("password ផ្ញើទៅ client", factory.last.passwords == [password])
+    await panel.msg("/accounts", user_id=STAFF)
+    expect("បន្ទាប់ពី Save → Account បង្ហាញក្នុង /accounts", panel.said_since(mark, LOGIN_PHONE))
 
-    factory = use_coordinator(reject_code="000000")
+    # ៩) លេខដើម + session ថ្មី → upsert (មិនបង្កើត row ស្ទួន)
+    FakeClient.reset()
     mark = panel.mark()
-    await start_login("+85512777001")
-    await wait_for_text_since(panel, mark, "កូដ OTP")
-    for attempt in range(3):
-        await panel.msg("000000", user_id=STAFF, expect_reply=False)
-        if attempt < 2:
-            await wait_for_text_since(panel, mark, "កូដមុនខុស")
-    expect("OTP ខុស ៣ ដង → បញ្ចប់", await wait_for_text_since(panel, mark, "កូដ OTP ខុស ៣ ដង"))
-    expect("គ្មាន pending ក្រោយបរាជ័យ", not chat_login.get_coordinator().has_pending(STAFF, STAFF))
-    expect("login បរាជ័យ → គ្មាន orphan row", await fetch_account("+85512777001") is None)
+    await add_session()
+    await panel.msg(SESSION_B, user_id=STAFF)
+    expect("Session ថ្មីលើលេខដើម → ភ្ជាប់រួច (upsert)", panel.said_since(mark, "✅ ភ្ជាប់រួច"))
+    again = await fetch_account(LOGIN_PHONE)
+    expect("upsert → រក្សា account id ដើម", again is not None and again.id == logged_id)
+    expect("upsert → គ្មាន row ស្ទួន", await account_count(LOGIN_PHONE) == 1)
+    expect("upsert → ciphertext ថ្មីជំនួសដើម",
+           again is not None and session_store.decrypt(again.session_encrypted) == SESSION_B)
 
-    factory = use_coordinator()
+    # ១០) លេខជាគណនីរបស់ admin ផ្សេង → បដិសេធ (IDOR) មិនប៉ះ row
+    reconciled_before = fake_manager.reconciled
+    FakeClient.reset()
     mark = panel.mark()
-    await start_login("+85512777002")
-    await wait_for_text_since(panel, mark, "កូដ OTP")
-    expect("pending មុន /cancel", chat_login.get_coordinator().has_pending(STAFF, STAFF))
-    mark = panel.mark()
-    await panel.msg("/cancel", user_id=STAFF)
-    expect("/cancel បោះបង់ login", panel.said_since(mark, "បានបោះបង់ការ login"))
-    expect("គ្មាន pending ក្រោយ /cancel", not chat_login.get_coordinator().has_pending(STAFF, STAFF))
-    expect("client ត្រូវ disconnect (/cancel)", factory.last.disconnected)
-    expect("/cancel → គ្មាន Account row", await fetch_account("+85512777002") is None)
+    await add_session(OWNER)
+    await panel.msg(SESSION_A, user_id=OWNER)
+    expect("លេខជាគណនី admin ផ្សេង → បដិសេធ", panel.said_since(mark, "admin ផ្សេងហើយ"))
+    expect("IDOR → client ត្រូវ disconnect", FakeClient.last().disconnected)
+    expect("IDOR → session មិនត្រូវ replace",
+           (await fetch_account(LOGIN_PHONE)).session_encrypted == (again.session_encrypted if again else None))
+    expect("IDOR បរាជ័យ → មិន reconcile ថ្មី", fake_manager.reconciled == reconciled_before)
+    manager_module._manager = None
 
-    # OTP timeout — អតិថិជនមិនវាយកូដ → coordinator បញ្ចប់ខ្លួនឯង (កុំឱ្យ pending ជាប់)
-    factory = use_coordinator()
-    saved_timeout = chat_login.CODE_TIMEOUT
-    chat_login.CODE_TIMEOUT = 0.2
-    mark = panel.mark()
-    await start_login("+85512777003")
-    expect("អត់ឆ្លើយក្នុង CODE_TIMEOUT → បញ្ចប់", await wait_for_text_since(panel, mark, "មិនឃើញកូដ OTP"))
-    chat_login.CODE_TIMEOUT = saved_timeout
-    expect("គ្មាន pending ក្រោយ timeout", not chat_login.get_coordinator().has_pending(STAFF, STAFF))
-    expect("timeout → គ្មាន orphan row", await fetch_account("+85512777003") is None)
-    expect("timeout → client ត្រូវ disconnect", factory.last.disconnected)
-    await chat_login.get_coordinator().shutdown()
+    expect("គ្រប់ flow → គ្មានសារ «កូដ OTP» សោះ", panel.says_not_since(0, "កូដ OTP"))
 
     print("— កិច្ចស្វ័យប្រវត្តិ + ទិន្នន័យ —")
     from services.reports import build_report

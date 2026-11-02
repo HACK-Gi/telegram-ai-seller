@@ -7,6 +7,7 @@ Telethon នឹងបង្កើត `SQLiteSession` file រាវលើ disk �
 from __future__ import annotations
 
 import hashlib
+import struct
 
 from cryptography.fernet import Fernet, InvalidToken
 from telethon.sessions import StringSession
@@ -76,7 +77,9 @@ def load_session(token: str) -> StringSession:
     plaintext = decrypt(token)
     try:
         return StringSession(plaintext)
-    except ValueError as exc:
+    except (ValueError, struct.error) as exc:
+        # ValueError = «Not a valid string»/base64 ខូច, struct.error = ប្រវែង byte ខុស
+        # (session ត្រូវកាត់ ឬលាយគណនីផ្សេង) — ទាំងពីរគឺ «session ខូច» មិនមែនកំហុសកូដទេ
         raise SessionCryptoError(f"session មិនត្រឹមត្រូវ: {type(exc).__name__}") from None
 
 

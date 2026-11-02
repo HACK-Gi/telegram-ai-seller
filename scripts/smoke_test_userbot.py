@@ -155,6 +155,22 @@ def fake_session(tag: str) -> str:
     return f"1SESSIONPLACEHOLDER{tag}"
 
 
+GOOD_API_HASH = "0123456789abcdef0123456789abcdef"
+
+
+def real_session(seed: int) -> str:
+    """StringSession ពិត (ដូច format អ្នកប្រើផ្ញើទៅ Bot) បង្កើត offline — auth key ក្លែង។"""
+    from telethon.crypto import AuthKey
+    from telethon.sessions import StringSession
+
+    session = StringSession()
+    session._dc_id = 2
+    session._server_address = "149.154.167.51"
+    session._port = 80
+    session._auth_key = AuthKey(bytes([(seed * 7 + offset) % 256 for offset in range(32)]))
+    return session.save()
+
+
 async def make_account(phone: str, *, ai_enabled: bool = True, working_hours: str | None = None) -> Account:
     token = session_store.encrypt(fake_session(phone))
     async with db_session() as session:
@@ -232,84 +248,117 @@ async def test_session_crypto() -> None:
     check("log record ត្រូវ redact session", plain not in record.getMessage() and "[redacted]" in record.getMessage())
 
 
-async def test_phone_normalization() -> None:
-    print("\n[1b] normalize_phone — លេខដែលអ្នកប្រើវាយ → E.164")
-    from userbot.chat_login import normalize_phone
-
-    check("«093251670» → +85593251670", normalize_phone("093251670") == "+85593251670")
-    check("«093 251 670» (មានចន្លោះ) → +85593251670", normalize_phone("093 251 670") == "+85593251670")
-    check("«+85593251670» រួចហើយ → ដដែល", normalize_phone("+85593251670") == "+85593251670")
-    check("«85593251670» (គ្មាន +) → +85593251670", normalize_phone("85593251670") == "+85593251670")
-    check("«00955...» → +855...", normalize_phone("0085593251670") == "+85593251670")
-    check("លេខខ្លី «01234567» → បដិសេធ (None)", normalize_phone("01234567") is None)
-    check("អត្ថបទ «abc» → បដិសេធ (None)", normalize_phone("abc") is None)
-    check("ទទេ → បដិសេធ (None)", normalize_phone("   ") is None)
-
-
 async def test_api_credentials() -> None:
-    print("\n[1c] api credentials — validation, encryption, resolve")
+    print("\n[1b] App credentials — `.env` តែមួយគត់ (OTP login ត្រូវបានលុប)")
+    from dataclasses import replace
+
+    import config
     from userbot import credentials
 
-    check("api_id «3141592» → 3141592", credentials.valid_api_id("3141592") == 3141592)
-    check("api_id មានចន្លោះ « 3141592 » → ទទួល", credentials.valid_api_id(" 3141592 ") == 3141592)
-    check("api_id អក្សរ «12ab34» → បដិសេធ", credentials.valid_api_id("12ab34") is None)
-    check("api_id ខ្លី «12345» → បដិសេធ", credentials.valid_api_id("12345") is None)
-    check("api_id ១១ ខ្ទង់ → បដិសេធ", credentials.valid_api_id("12345678901") is None)
-    check("api_id ០ → បដិសេធ", credentials.valid_api_id("000000") is None)
+    good_hash = GOOD_API_HASH
+    env = credentials.env_credentials()
+    check(".env រួចរាល់ → (api_id, api_hash)", env == (12345, good_hash))
+    check("api_id ជា int (Telethon initConnection)", isinstance(env[0], int))
+    check("resolve() អានពី .env តែមួយ", credentials.resolve() == env)
+    check("is_configured() = True", credentials.is_configured())
+    check("ខ្វះអ្វី → សារទទេពេល .env រួចរាល់", credentials.missing_credentials_message() == "")
+    check("គ្មាន function បញ្ជូນ api_id/api_hash តាម chat",
+          not any(hasattr(credentials, name) for name in ("valid_api_id", "valid_api_hash",
+                                                          "encrypt_credential", "decrypt_credential",
+                                                          "stored_credentials")))
 
-    good_hash = "0123456789abcdef0123456789abcdef"
-    check("api_hash ៣២ hex → ទទួល", credentials.valid_api_hash(good_hash) == good_hash)
-    check("api_hash ខ្លី «abcd» → បដិសេធ", credentials.valid_api_hash("abcd") is None)
-    check("api_hash មានតួអក្សរខុស → បដិសេធ", credentials.valid_api_hash("z" * 32) is None)
+    saved = config.settings
+    try:
+        config.settings = replace(saved, tg_api_id=0, tg_api_hash="")
+        check(".env ទទេ → env_credentials None", credentials.env_credentials() is None)
+        check(".env ទទេ → resolve None (គ្មាន fallback ទេ)", credentials.resolve() is None)
+        check(".env ទទេ → is_configured False", not credentials.is_configured())
+        empty = credentials.missing_credentials_message()
+        check(".env ទទេ → ណែនាំ TG_API_ID + TG_API_HASH", "TG_API_ID" in empty and "TG_API_HASH" in empty)
+        check(".env ទទេ → ណែនាំ my.telegram.org", "my.telegram.org" in empty)
+        check("សារណែនាំមិនបង្ហាញ hash ពិត", good_hash not in empty)
 
-    token = credentials.encrypt_credential("3141592")
-    check("api_id ciphertext ≠ plaintext", "3141592" not in token)
-    check("decrypt api_id ត្រឡប់ដើម", credentials.decrypt_credential(token) == "3141592")
+        config.settings = replace(saved, tg_api_hash="zzzz")
+        check("api_hash មិនមែន hex ៣២ → env_credentials None", credentials.env_credentials() is None)
+        check("api_hash ខុស → រាប់តែ TG_API_HASH", "TG_API_ID" not in credentials.missing_credentials_message())
+    finally:
+        config.settings = saved
 
     phone = "+85517000123"
     async with db_session() as session:
         account = await crud.create_account(
-            session,
-            phone=phone,
-            session_encrypted=session_store.encrypt(fake_session(phone)),
-            tg_api_id_encrypted=credentials.encrypt_credential("3141592"),
-            tg_api_hash_encrypted=credentials.encrypt_credential(good_hash),
+            session, phone=phone, session_encrypted=session_store.encrypt(real_session(1)), name="Smoke Session"
         )
         account_id = account.id
     async with db_session() as session:
         stored = await crud.get_account(session, account_id)
-    check("stored_credentials decrypt → (3141592, hash)", credentials.stored_credentials(stored) == (3141592, good_hash))
-    check("is_configured = True", credentials.is_configured(stored))
-    check("resolve ជ្រើស creds របស់គណនី", credentials.resolve(stored) == (3141592, good_hash))
-    check("ciphertext ក្នុង DB មិនមែន plaintext", good_hash not in (stored.tg_api_hash_encrypted or ""))
-
-    async with db_session() as session:
-        bare = await crud.create_account(
-            session, phone="+85517000124", session_encrypted=session_store.encrypt(fake_session("bare"))
-        )
-        bare_id = bare.id
-    async with db_session() as session:
-        bare = await crud.get_account(session, bare_id)
-    check("គ្មាន creds → stored_credentials None", credentials.stored_credentials(bare) is None)
-    env_creds = (settings.tg_api_id, settings.tg_api_hash)
-    check("គ្មាន creds របស់គណនី → fallback ទៅ .env", credentials.resolve(bare) == env_creds)
-    # settings ជា frozen dataclass — បិទ .env ដោយប្តូរ helper ជំនួស
-    original_env = credentials.env_credentials
-    credentials.env_credentials = lambda: None
-    try:
-        check("គ្មាន creds + គ្មាន .env → resolve None", credentials.resolve(bare) is None)
-        check("គ្មាន .env → is_configured False", not credentials.is_configured(bare))
-        check("creds របស់គណនីនៅតែដំណើរការ ទោះ .env ទទេ", credentials.resolve(stored) == (3141592, good_hash))
-    finally:
-        credentials.env_credentials = original_env
-    check("mask_phone បិទកណ្តាល", credentials.mask_phone("+85593251670") == "+855****1670")
+    check("session ចូល DB ជា ciphertext", (stored.session_encrypted or "").startswith("gAAAAA"))
+    check("ciphertext មិនផ្ទុក session plaintext", real_session(1) not in stored.session_encrypted)
+    check("decrypt ត្រឡប់ session ដើម", session_store.decrypt(stored.session_encrypted) == real_session(1))
+    check("addsession មិនសរសេរ api_id ចុះ row", not stored.tg_api_id_encrypted)
+    check("addsession មិនសរសេរ api_hash ចុះ row", not stored.tg_api_hash_encrypted)
 
     from admin_bot.render import account_card
 
     card = account_card(stored)
-    check("Panel បង្ហាញ ✅ Configured", "✅ Configured" in card)
+    check("Panel បង្ហាញតែស្ថានភាព .env (✅)", "✅" in card and "❌" not in card)
     check("Panel មិនបង្ហាញ api_hash", good_hash not in card)
-    check("Panel មិនបង្ហាញ api_id", "3141592" not in card)
+    check("Panel មិនបង្ហាញ api_id", "12345" not in card)
+    check("Panel មិនបង្ហាញ session string", real_session(1) not in card)
+    check("mask_phone បិទកណ្តាល", credentials.mask_phone("+85593251670") == "+855****1670")
+
+
+async def test_session_string_store() -> None:
+    print("\n[1c] Session String — ផ្លូវដែលសល់តែមួយ (គ្មាន OTP ក្នុង chat)")
+    from telethon.sessions import StringSession
+
+    from userbot import credentials
+
+    plain = real_session(2)
+    check("StringSession ពិត → ចាប់ផ្តើមដោយ '1'", plain.startswith("1"))
+    check("StringSession ពិត → 352/353 តួ (វែងជាង gate ៥០)", len(plain) >= 300)
+    check("API_HASH_RE ទទួល hex ៣២", credentials.API_HASH_RE.match(GOOD_API_HASH) is not None)
+    check("API_HASH_RE បដិសេធតម្លៃខ្លី «abcd»", credentials.API_HASH_RE.match("abcd") is None)
+
+    token = session_store.encrypt(plain)
+    check("load_session ត្រឡប់ StringSession object", isinstance(session_store.load_session(token), StringSession))
+    restored = session_store.load_session(token)
+    check("load_session រក្សា dc_id/server/port/auth_key",
+          (restored.dc_id, restored.server_address, restored.port) == (2, "149.154.167.51", 80)
+          and restored.auth_key is not None)
+    check("load_session មិនត្រឡប់ str (កុំបង្កើត SQLite file)", not isinstance(restored, str))
+    check("fingerprint = 12 hex ប៉ុណ្ណោះ", len(session_store.fingerprint(plain)) == 12)
+    check("fingerprint មិនបង្ហាញ session", session_store.fingerprint(plain) not in plain)
+
+    try:
+        session_store.encrypt("")
+        check("session ទទេ → SessionCryptoError", False)
+    except SessionCryptoError:
+        check("session ទទេ → SessionCryptoError", True)
+
+    class _NoKey:
+        class session:
+            @staticmethod
+            def save() -> str:
+                return ""
+
+    try:
+        session_store.store_session(_NoKey())
+        check("គ្មាន auth key → បដិសេធមិនរក្សាទុក", False)
+    except SessionCryptoError:
+        check("គ្មាន auth key → បដិសេធមិនរក្សាទុក", True)
+
+    try:
+        session_store.load_session(session_store.encrypt("1" + "A" * 300))
+        check("session ខូច → SessionCryptoError", False)
+    except SessionCryptoError as exc:
+        check("session ខូច → SessionCryptoError", True)
+        check("session ខូច → សារមិនរសាត់ plaintext", "AAAA" not in str(exc))
+
+    # session មិនដែលចេញ log (SecretRedactor + register_secret ពី encrypt)
+    record = logging.LogRecord("x", logging.ERROR, "", 0, f"connect failed session={plain}", (), None)
+    safety.SecretRedactor().filter(record)
+    check("log record ត្រូវ redact session", plain not in record.getMessage() and "[redacted]" in record.getMessage())
 
 
 async def test_sticky_rules() -> None:
@@ -1129,8 +1178,8 @@ async def main() -> int:
     await init_db()
     print("🧪 userbot smoke — ជំហានទី ២.១ (គ្មានបណ្តាញ)")
     await test_session_crypto()
-    await test_phone_normalization()
     await test_api_credentials()
+    await test_session_string_store()
     await test_sticky_rules()
     await test_windows()
     await test_budget()

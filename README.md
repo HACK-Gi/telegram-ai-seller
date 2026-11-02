@@ -33,7 +33,7 @@ cp .env.example .env      # រួចកែតម្លៃក្នុង .env
 | `ADMIN_IDS` | ID ជំនួយ (ឆ្លាស់គ្នាដោយ `,`) អាចទទេ |
 | `AI_BACKEND` | `mock` \| `groq` \| `qoder_cli` \| `openai` \| `ollama` (ណែនាំ `openai` = Qoder Proxy, មើល ៤.១) |
 | `SESSION_FERNET_KEY` | បង្កើត៖ `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` (ប្រើនៅជំហានទី ២) |
-| `TG_API_ID` / `TG_API_HASH` | **មិនចាំបាច់** — api_id/api_hash ជារបស់គណនីនីមួយៗ (វាយតាម `/addaccount`, Encrypt ក្នុង DB)។ ទុកទទេ = គ្មាន fallback សម្រាប់គណនីចាស់ |
+| `TG_API_ID` / `TG_API_HASH` | **ចាំបាច់** — App តែមួយសម្រាប់គ្រប់គណនី ហើយអានពី `.env` តែប៉ុណ្ណោះ (មិនដែលវាយតាម chat ទេ)។ ខ្វះ/ខុស → `/addsession` បដិសេធ ព្រមទាំងណែនាំជំហាន |
 
 លើកដំបូង អាចដាក់ `BOT_TOKEN=MOCK` និង `USE_MOCK_BOT=true` បាន ព្រោះប្រព័ន្ធមាន
 Mock Telegram session ក្នុង `admin_bot/mock.py` សម្រាប់តេស្ត។
@@ -42,10 +42,10 @@ Mock Telegram session ក្នុង `admin_bot/mock.py` សម្រាប់�
 
 ```bash
 python main.py                      # Admin Bot + កិច្ចស្វ័យប្រវត្តិ
-python scripts/smoke_test.py        # តេស្ត ១២១ ជំហានក្នុង Panel (គ្មាន token, គ្មានបណ្តាញ)
+python scripts/smoke_test.py        # តេស្ត ១៩២ ជំហានក្នុង Panel (គ្មាន token, គ្មានបណ្តាញ)
 python scripts/smoke_test_ai.py     # តេស្ត ៣៧ checks — echo guard + fallback chain
-python scripts/smoke_test_userbot.py    # តេស្ត ១១៥ checks — sticky + catalog + voice gate (គ្មានបណ្តាញ)
-python scripts/smoke_test_migration.py  # តេស្ត ៣២ checks — migration v4 + oversell (ច្បាប់ app.db, គ្មានប៉ះពិត)
+python scripts/smoke_test_userbot.py    # តេស្ត ២០៣ checks — sticky + catalog + voice gate (គ្មានបណ្តាញ)
+python scripts/smoke_test_migration.py  # តេស្ត ៤៨ checks — migration v4 + oversell (ច្បាប់ app.db, គ្មានប៉ះពិត)
 ./scripts/install_qoder.sh          # ដំឡើង/ផ្ទៀងផ្ទាត់ Qoder CLI (សម្រាប់ Qoder Proxy)
 ./scripts/run_qoder_proxy.sh --bg   # រត់ OpenAI-compatible Proxy នៅ port 3000
 python scripts/test_qoder_proxy.py  # តេស្ត Proxy ពិតតាម HTTP (health + chat + 400)
@@ -194,32 +194,35 @@ data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — 
 * Panel ចម្លើយតែ **owner + admin** ប៉ុណ្ណោះ។ អ្នកប្រើផ្សេងទៀតត្រូវបដិសេធស្ងាត់ៗ។
 * ជំហានទី ២ (Userbot) នឹង៖ ចម្លើយ **តែអតិថិជនដែលផ្ញើសារមកមុន (inbound only)**, ពន្យារ
   ៥–១៥ វិនាទីរវាងសារ, រៀប typing, កំណត់ ៥០ សារ/ម៉ោង និង ២០០ សារ/ថ្ងៃ ក្នុងមួយគណនី,
-  មាន warm-up ៧ ថ្ងៃ, និង **មិន log session ឬ OTP**។
-* ការបន័ែមគណនីធ្វើ **តាម chat Admin Bot** (`/addaccount` ឬចុច ➕ ក្នុង menu Accounts) ហើយ
-  សារលេខទូរស័ព្ទ/api_id/api_hash/OTP/2FA ដែល admin វាយចូល **ត្រូវលុបភ្លាម** ពេលអានរួច
-  (`_delete_secret`) ទើបគ្មានអ្វីសល់ក្នុង history របស់ Bot។ ទាំងនោះមិនដែលចូល log ឬ Panel ឡើយ —
-  session + api credentials រក្សាទុក Fernet ក្នុង DB តែប៉ុណ្ណោះ (Panel បង្ហាញតែ «✅ Configured»)។
+  មាន warm-up ៧ ថ្ងៃ, និង **មិន log session string ឬ api credentials**។
+* ការបន័ែមគណនីធ្វើ **តាម chat Admin Bot** ដោយ **Session String តែមួយគត់** (`/addsession`
+  ឬចុច «🔐 បន័ែមគណនីតាម Session String»)។ OTP/2FA វាយក្នុង chat **ត្រូវបានលុបចោល**
+  ព្រោះ chat របស់ Bot មិនមែនកន្លែងសុវត្ថិភាពទេ (aiogram រក្សា update, log, backup)។ សារ
+  Session String ដែល admin វាយចូល **ត្រូវលុបភ្លាម** ពេលអានរួច (`_delete_secret`) ទើប
+  គ្មានអ្វីសល់ក្នុង history របស់ Bot។ `api_id`/`api_hash` មិនដែលវាយតាម chat ទេ — អានពី
+  `.env` ហើយ session រក្សាទុក Fernet ក្នុង DB តែប៉ុណ្ណោះ (Panel បង្ហាញតែ «✅ កំណត់ក្នុង .env រួច»)។
   (CLI login ត្រូវបានលុបចេញ — មានផ្លូវ chat តែមួយ)
 * `.env` និង `data/` ស្ថិតក្នុង `.gitignore` — កុំពិនិត្យវាចូល repository ឡើយ។
 
 ### ៦.១ បើក Userbot (ជំហានទី ២.១)
 
-1. ដាក់តែ `SESSION_FERNET_KEY` ក្នុង `.env` (បង្កើត៖ `python scripts/generate_keys.py --write`)។
-   `TG_API_ID`/`TG_API_HASH` **មិនត្រូវការទេ** — វាជារបស់គណនីនីមួយៗ។
-2. ចុះឈ្មោះគណនីនីមួយៗ **តាម chat Admin Bot**៖ `/addaccount +855XXXXXXXX` (ឬចុច ➕) —
-   Bot សួរតាមលំដាប់៖ **លេខទូរស័ព្ទ → api_id → api_hash → OTP → 2FA (បើមាន)**។
-   លេខទូរស័ព្ទ/api_id/api_hash/OTP/2FA **ត្រូវលុបភ្លាម** ពេលអានរួច, ខុស ៣ ដង ឬអត់ឆ្លើយ
-   ៥ នាទី (OTP) / ៣ នាទី (2FA) → login បញ្ចប់ខ្លួនឯង, និង `/cancel` បោះបង់គ្រប់ពេល។
-   api_id/api_hash យកពី **my.telegram.org → API development tools** របស់គណនីនោះ
-   (bot ណែនាំជំហានផ្ទាល់ក្នុង chat)។ Session + api credentials រក្សាទុកជា Fernet ក្នុង DB។
-3. បើក `python main.py` — គណនីដែល `enabled` ភ្ជាប់ស្វ័យប្រវត្តិ; បន្ថែម/បិទគណនីថ្មី
-   តាម panel ឃើញផលក្នុង ≤ ៦០ វិនាទី (hot-reload គ្មាន restart — coordinator ហៅ `reconcile()` ភ្លាម)
-4. បញ្ជាសង្គ្រោះបន្ទាន់ពី Telegram ផ្ទាល់ (send ទៅលេខគណនី userbot)៖
+1. ដាក់ `TG_API_ID` + `TG_API_HASH` (App របស់អ្នកពី **my.telegram.org → API development
+   tools**) និង `SESSION_FERNET_KEY` (បង្កើត៖ `python scripts/generate_keys.py --write`) ក្នុង
+   `.env` — គ្រប់គណនីប្រើ App តែមួយ ដូច្នេះគ្មានតម្លៃណាវាយតាម chat ទេ។
+2. បង្កើត Session String ក្នុង terminal របស់អ្នក:
+   `.venv/bin/python scripts/get_session.py +855XXXXXXXX` → វាយ OTP (និង 2FA បើមាន) ក្នុង
+   terminal ខ្លួនឯង ទើប code មិនដែលចូល Telegram chat → ចម្លងកូដវែងដែលបង្ហាញចេញ។
+3. ផ្ញើវាទៅ Bot តាម `/addsession` (ឬចុច ➕/ប៊ូតុង Session String ក្នុង menu Accounts) —
+   Bot លុបសារភ្លាម រួច Validate → Encrypt → Save ក្នុង DB ហើយភ្ជាប់គណនី។ ខុសទ្រង់ទ្រាយ
+   ឬផុតកំណត់ → បដិសេធ + ណែនាំបង្កើតថ្មី (គ្មាន row សល់) និង `/cancel` បោះបង់គ្រប់ពេល។
+4. បើក `python main.py` — គណនីដែល `enabled` ភ្ជាប់ស្វ័យប្រវត្តិ; បន្ថែម/បិទគណនីថ្មី
+   តាម panel ឃើញផលក្នុង ≤ ៦០ វិនាទី (hot-reload គ្មាន restart — addsession ហៅ `reconcile()` ភ្លាម)
+5. បញ្ជាសង្គ្រោះបន្ទាន់ពី Telegram ផ្ទាល់ (send ទៅលេខគណនី userbot)៖
    `/pause <id>` · `/resume <id>` · `/pauseall` · `/resumeall` · `/stopbot` · `/startbot` · `/status`
 
 ច្បាប់ sticky គឺ hard-rule៖ អតិថិជនសរសេរមក A → តែ A តប។ បើគេសរសេរមក B → B មិនតប
 ទេ ហើយម្ចាស់ទទួលបានជូនដំណឹង (គ្មាន auto-switch/RR សម្រាប់ inbound — ការផ្ញើរាល់ចេញពី
-គណនីទៅមនុស្សមិនស្គាល់គឺជាផ្លូវ ban)។ តេស្ត៖ `python scripts/smoke_test_userbot.py` (១៥៥ checks គ្មានបណ្តាញ)។
+គណនីទៅមនុស្សមិនស្គាល់គឺជាផ្លូវ ban)។ តេស្ត៖ `python scripts/smoke_test_userbot.py` (២០៣ checks គ្មានបណ្តាញ)។
 
 ### ៦.២ ហាងលក់ពេញលេញលើ Userbot (inline catalog)
 
@@ -238,14 +241,48 @@ data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — 
   product_code, stock reservation, default prompt refresh (ជំនួសតែលំនាំដើមចាស់ មិនប៉ះ
   កំណត់ហេតុម្ចាស់)។
 
+## 🧪 Testing
+
+គ្រប់តេស្តរត់ **ក្នុង machine តែមួយ** — គ្មាន BOT_TOKEN ពិត គ្មានបណ្តាញ Telegram គ្មានប៉ះ
+`data/app.db` (រាល់ suite បង្កើត DB សាកល្បងរបស់វាខ្លួនឯង)៖
+
+```bash
+.venv/bin/python scripts/smoke_test.py         # ១៩២ ជំហាន — Panel ទាំងមូលឆ្លងកាត់ dispatcher + MockSession
+.venv/bin/python scripts/smoke_test_ai.py      # ៣៧  checks — echo guard, fallback chain, mock មិនស្ងាត់
+.venv/bin/python scripts/smoke_test_userbot.py # ២០៣ checks — sticky, catalog, rate cap, session crypto
+.venv/bin/python scripts/smoke_test_migration.py # ៤៨ checks — migration idempotent + oversell (ច្បាប់ app.db)
+```
+
+**ច្បាប់ដែលតេស្តការពារ (ចុះឈ្មោះគណនី)៖**
+
+* **Session String ជាផ្លូវតែមួយ** — `/addaccount` មិនសួរលេខទូរស័ព្ទ/OTP ទេ វាបញ្ជូនទៅ
+  `/addsession`។ គ្មាន `waiting_phone`/`waiting_code`/`waiting_password` ក្នុង FSM ទៀតទេ
+  (OTP login ត្រូវបានលុបចោលពីកូដ — តេស្តវាស់ «លុបមែន» ដោយ `hasattr`)។
+* **api_id/api_hash មិនដែលវាយតាម chat** — អានពី `.env` តែប៉ុណ្ណោះ ហើយ Panel បង្ហាញតែ
+  ស្ថានភាពកំណត់ (✅/❌) មិនមែនតម្លៃពិត។
+* **សារ Session String ត្រូវ Auto-delete** មុនការ validate បន្ទាប់ពីអាន — ទោះករណីបដិសេធ។
+* **Session ចូល DB ជា Fernet ciphertext** — decrypt ត្រឡប់ដើម ហើយ plaintext មិនដែល
+  ចេញជាសារ Bot ឬចូល log (វាស់ទាំង traceback នៃករណី exception)។
+* **ទ្រង់ទ្រាយត្រូវរាំងមុនភ្ជាប់** — ខ្លីជាង ៥០ តួ ឬមិនចាប់ផ្តើមដោយលេខ → បដិសេធ ដោយមិន
+  បង្កើត client និងមិនបន្សល់ row។
+* **Session ខូច/ផុតកំណត់ → បដិសេធ + ណែនាំបង្កើតថ្មី** — មិនដែល orphan row; កំហុសបង្ហាញតែ
+  ប្រភេទ exception មិនមែនទិន្នន័យ។
+* **IDOR** — លេខដែលជាគណនីរបស់ admin ផ្សេង មិនអាច replace session បានទេ ហើយមិន
+  trigger reconcile។ លេខដើម → upsert (រក្សា account id, គ្មាន row ស្ទួន)។
+* Save ជោគជ័យ → `manager.reconcile()` ម្តង ហើយគណនីលេចមុខក្នុង `/accounts`។
+
+បន្ទាប់ពីកែ `admin_bot/`, `userbot/` ឬ `ai_engine/` — ត្រូវរត់ទាំង ៤ suite ឱ្យឃើញ
+«✅ គ្រប់ជំហានដំណើរការរលូន» / «N/N checks ឆ្លងកាត់» មុន commit។ ផ្លូវ network ពិត
+(Telegram DC) ត្រូវតេស្តលើគណនីពិតដោយម្ចាស់ ព្រោះ suite ទាំងនេះក្លែង Telethon client។
+
 ## ៧. គម្រោង
 
 * [x] **ជំហានទី ១** — Core scaffold: DB ទាំងអស់, Admin Panel ពេញលេញ, AI engine ៤ ក្បាល, backup/របាយការណ៍
 * [x] **ជំហានទី ២.១** — Userbot multi-account (Telethon): sticky sessions, hot-reload, anti-ban
-      (១១៥/១១៥ checks គ្មានបណ្តាញ — live test ត្រូវការ TG_API_ID/HASH + Fernet key)
+      (២០៣/២០៣ checks គ្មានបណ្តាញ — live test ត្រូវការ TG_API_ID/HASH + Fernet key)
 * [x] **ជំហានទី ២.១b** — ហាងលក់ពេញលេញ៖ ៧ ប្រភេទ + product_code, stock reservation
       + oversell prevention, inline catalog (welcome→categories→product→🛒→QR),
-      voice/video rejection, prompt ថ្មី categories-aware (Panel ១២១ · userbot ១១៥ ·
-      migration ៣២ · AI ៣២ ឆ្លងកាត់ទាំងអស់)
+      voice/video rejection, prompt ថ្មី categories-aware (Panel ១៩២ · userbot ២០៣ ·
+      migration ៤៨ · AI ៣៧ ឆ្លងកាត់ទាំងអស់)
 * [ ] **ជំហានទី ២.២** — ភ្ជាប់ Panel ឱ្យបញ្ជា userbot ផ្ទាល់ (send-from-sticky-account, live status) + live test
 * [ ] **ជំហានទី ៣** — SaaS $3/ខែ (តែលើ Bot API)៖ `/subscribe`, ស្លីប, admin បញ្ជាក់, ជូនដំណឹងមុនផុតកំណត់ ៣ ថ្ងៃ

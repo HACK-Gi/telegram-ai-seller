@@ -305,7 +305,7 @@ def accounts_menu(accounts: Sequence[Account], scope: "Scope | None" = None) -> 
         ]
         for item in accounts
     ]
-    rows.append([("➕ បន័ែមគណនី (login ក្នុង chat)", "acc:add")])
+    rows.append([("🔐 បន្ថែមគណនីតាម Session String", "acc:addsession")])
     rows.append([("ℹ️ របៀបបន័ែមគណនី", "acc:howto")])
     rows.append([BACK_MAIN])
     return build(rows)

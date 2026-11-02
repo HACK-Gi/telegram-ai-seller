@@ -33,6 +33,10 @@ src.close()
 
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{SCRATCH}"
 os.environ["AI_BACKEND"] = "mock"
+# Fernet key សម្រាប់ round-trip ក្នុងតេស្តនេះប៉ុណ្ណោះ (មិនពឹង .env របស់ម្ចាស់)
+from cryptography.fernet import Fernet  # noqa: E402
+
+os.environ["SESSION_FERNET_KEY"] = Fernet.generate_key().decode()
 
 from sqlalchemy import delete  # noqa: E402
 
@@ -150,8 +154,8 @@ async def main() -> int:
         await s.execute(delete(Account).where(Account.id == acct_id))
         await s.commit()
 
-    print("\n[1c] Migration ២.៣ — telegram_accounts credentials additive (session មិនប៉ះ)")
-    from userbot import credentials
+    print("\n[1c] Migration ២.៣ — telegram_accounts credentials legacy (session មិនប៉ះ)")
+    from userbot import session_store
 
     with sqlite3.connect(str(SCRATCH)) as con:
         acct_cols = {row[1] for row in con.execute("PRAGMA table_info(telegram_accounts)")}
@@ -159,8 +163,8 @@ async def main() -> int:
             "SELECT id, phone, session_encrypted, status, enabled, "
             "tg_api_id_encrypted, tg_api_hash_encrypted FROM telegram_accounts ORDER BY id"
         ).fetchall()
-    check("ជួង tg_api_id_encrypted ត្រូវបានបន្ថែម", "tg_api_id_encrypted" in acct_cols)
-    check("ជួង tg_api_hash_encrypted ត្រូវបានបន្ថែម", "tg_api_hash_encrypted" in acct_cols)
+    check("ជួង tg_api_id_encrypted ត្រូវបានបន័ែម", "tg_api_id_encrypted" in acct_cols)
+    check("ជួង tg_api_hash_encrypted ត្រូវបានបន័ែម", "tg_api_hash_encrypted" in acct_cols)
     check(
         f"គណនី {len(acct_pre)} ជួរចាស់ — session/status/enabled មិនប្តូរ",
         [row[:5] for row in acct_post] == acct_pre,
@@ -168,23 +172,31 @@ async def main() -> int:
     check("គណនីចាស់ទាំងអស់ → creds NULL (មិន guess App ជំនួសម្ចាស់)",
           all(row[5] is None and row[6] is None for row in acct_post))
 
+    # ជួង legacy ទាំងនេះ OTP ជំនាន់ចាស់សរសេរវា; ផ្លូវសល់តែមួយឥឡូវគឺ Session String ពី .env
+    # → migration ត្រូវរក្សាទុកតម្លៃដែលមានរួច (គ្មាន wipe) ទោះ app មិនសរសេរបន្ថែមទេ
+    legacy_session = "1" + "L" * 351
+    legacy_hash = "0123456789abcdef0123456789abcdef"
     async with dbsession.SessionFactory() as s:
         cred_acct = await crud.create_account(
             s,
             "+85519990008",
-            "encrypted-session-creds",
+            session_store.encrypt(legacy_session),
             "CREDS MIG",
-            tg_api_id_encrypted=credentials.encrypt_credential("3141592"),
-            tg_api_hash_encrypted=credentials.encrypt_credential("0123456789abcdef0123456789abcdef"),
+            tg_api_id_encrypted=session_store.encrypt("3141592"),
+            tg_api_hash_encrypted=session_store.encrypt(legacy_hash),
         )
         await s.commit()
         cred_acct_id = cred_acct.id
     await migrations.migrate()
     async with dbsession.SessionFactory() as s:
         kept = await crud.get_account(s, cred_acct_id)
-        check("migration ម្តងទៀត → creds នៅរក្សា",
-              credentials.stored_credentials(kept) == (3141592, "0123456789abcdef0123456789abcdef"))
-        check("creds ក្នុង DB ជា ciphertext", "0123456789abcdef0123456789abcdef" not in (kept.tg_api_hash_encrypted or ""))
+        check("migration ម្តងទៀត → legacy api_id នៅ decrypt បាន",
+              session_store.decrypt(kept.tg_api_id_encrypted) == "3141592")
+        check("migration ម្តងទៀត → legacy api_hash នៅ decrypt បាន",
+              session_store.decrypt(kept.tg_api_hash_encrypted) == legacy_hash)
+        check("legacy creds ក្នុង DB ជា ciphertext", legacy_hash not in (kept.tg_api_hash_encrypted or ""))
+        check("migration ម្តងទៀត → session នៅ decrypt ត្រឡប់ដើម",
+              session_store.decrypt(kept.session_encrypted) == legacy_session)
         await s.execute(delete(Account).where(Account.id == cred_acct_id))
         await s.commit()
 
