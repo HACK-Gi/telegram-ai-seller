@@ -164,6 +164,34 @@ AI_TIMEOUT=90
 បិទ tool ទាំងអស់ + `--no-session-persistence` ដូច្នេះសារអតិថិជនមិនអាចឱ្យ CLI កែឯកសារ ឬ
 រត់ command បានទេ។ Log បង្ហាញតែប្រវែងចម្លើយ មិន log prompt ពេញលេញទេ។
 
+### ៤.២ 🖥️ Platform Support (Auto-Install ធ្វើតែលើ VPS)
+
+`python main.py` ហៅ `services/qoder_setup.py` មុន `init_db()` — វាពិនិត្យ Platform រួច
+Auto-Install Qoder CLI + Auto-Run Proxy **តែនៅពេលជា VPS** (មិនមែន Serverless)។
+បើ Qoder បរាជ័យ Bot **នៅរត់ធម្មតា** ហើយ `ai_engine` ធ្លាក់ទៅ Groq រួច Mock ដោយស្វ័យប្រវត្តិ
+(`openai → fallback: groq, mock`)។
+
+| Platform | Bot | Userbot | Qoder AI | Session Web |
+| :--- | :--- | :--- | :--- | :--- |
+| **VPS / Cloud Shell** | ✅ | ✅ | ✅ Auto-Install | ✅ |
+| **Render / Railway** | ✅ | ✅ | ✅ Auto-Install | ✅ |
+| **Heroku** | ✅ | ✅ | ⚠️ ត្រូវ buildpack | ✅ |
+| **Vercel / Netlify** | ❌ | ❌ | ❌ (រំលង) | ✅ |
+
+សញ្ញាដែលរាប់ជា Serverless (រំលង Auto-Install ទាំង `install_qoder.sh` និង `main.py`)៖
+`VERCEL` · `VERCEL_ENV` · `NETLIFY` · `AWS_LAMBDA_FUNCTION_NAME`។
+
+```bash
+./scripts/install_qoder.sh                 # VPS → ✅ Qoder CLI ready ឬដំឡើងថ្មី
+VERCEL=1 ./scripts/install_qoder.sh        # ⏭️ Serverless — រំលង (exit 0 ជានិច្ច)
+VERCEL=1 .venv/bin/python main.py          # Bot ចាប់ផ្តើមដោយគ្មាន Qoder (fallback Groq)
+```
+
+ចំណាំ៖
+* **Cloud Shell** អាច reset ពេលបិទ >១២០ នាទី → CLI បាត់ ប៉ុន្តែ `main.py` ដំឡើងឡើងវិញជានិច្ចពេល Startup។
+* **Vercel** គាំទ្រតែ `session_web/` (គ្មាន polling Telegram ជាប់ជានិច្ច ហើយគ្មាន filesystem) — កុំ Deploy ទាំង Bot ឡើង។
+* **Bot គួររត់លើ VPS/Render/Railway** រីឯ Session Web ប៉ុណ្ណោះដែល Deploy ទៅ Vercel។
+
 ## ៥. រចនាសម្ព័ន្ធ
 
 ```
@@ -176,6 +204,7 @@ admin_bot/              access.py (StaffGate) · bot.py · keyboards.py · rende
 ai_engine/              base · mock · qoder_cli · openai_compat · ollama · prompting · chain
 services/               backup.py · reports.py · scheduler.py (២១:០០ របាយការណ៍,
                         ចន្ទ ០៩:០០ សេចក្តីសង្ខេប, backup រាល់ ២៤ ម៉ោង, stock តិច)
+                        · qoder_setup.py (Platform Detection + Auto-Install CLI/Proxy តែ VPS)
 userbot/                (ជំហានទី ២.១ — ដំណើរការ)៖ manager.py (multi-account +
                         hot-reload ៦០s) · seller.py (sticky bind + AI reply + off-hours
                         + voice gate + code delivery) · catalog.py (inline buttons

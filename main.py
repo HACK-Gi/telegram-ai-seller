@@ -51,9 +51,19 @@ async def run() -> None:
     setup_logging()
     from admin_bot.bot import build_dispatcher, create_bot, is_mock  # ព្យាយាម import ក្រោយ logging រួច
     from database.session import init_db
+    from services.qoder_setup import ensure_qoder_cli, ensure_qoder_proxy, is_serverless
     from services.scheduler import build_scheduler, describe_jobs
 
     log.info("ចាប់ផ្តើម Telegram AI Auto-Seller · AI backend = %s · timezone = %s", settings.ai_backend, settings.timezone)
+
+    # ជំហានទី ១ — Qoder bootstrap ដំណើរការបានតែលើ VPS ប៉ុណ្ណោះ។ បរាជ័យមិនបិទ Bot ទេ
+    # (`ai_engine` ធ្លាក់ទៅ Groq រួច mock ដោយស្វ័យប្រវត្តិ)។
+    if is_serverless():
+        log.info("⏭️  Serverless platform — រំលង Qoder auto-install + proxy (តែ session_web រត់)")
+    else:
+        ensure_qoder_cli()
+        ensure_qoder_proxy()
+
     await init_db()
     log.info("ទិន្នន័យដំបូងរួចរាល់ (តារាង + settings លំនាំដើម)")
 

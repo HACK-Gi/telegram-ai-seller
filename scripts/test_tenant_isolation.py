@@ -45,8 +45,9 @@ from admin_bot.handlers import products as product_handlers  # noqa: E402
 from admin_bot.scope import Scope  # noqa: E402
 from config import settings  # noqa: E402
 from database import crud, db_session, init_db  # noqa: E402
-from database.models import OrderStatus  # noqa: E402
+from database.models import Admin, OrderStatus  # noqa: E402
 from helpers import utcnow  # noqa: E402
+from sqlalchemy import func, select  # noqa: E402
 
 A, B, C = 910000001, 910000002, 910000003
 OWNERS = (A, B, C)
@@ -244,6 +245,25 @@ async def main() -> int:
         check("B លក់តាមគណនីដែលទទួលផ្ទេរ → មិនបាន QR ធនាគាររបស់ A (fail-closed)", orphan is None)
         untouched = await crud.get_qrcode(session, built[A]["qr"], owner_admin_id=A)
         check("QR ចាស់នៅជារបស់ A ដដែល (លុយមិន្លេចតាមគណនី)", untouched is not None and untouched.is_default)
+
+    # ---------- ៨) Auto-register ប្រកួតប្រជែង — សារបីរបស់អ្នកដដែលមកព្រមគ្នា ----------
+    RACER = 910000999
+
+    async def register_once() -> int:
+        async with db_session() as session:
+            row = await crud.auto_register_user(session, RACER, first_name="Racer")
+            return row.id
+
+    raced_ids = await asyncio.gather(*(register_once() for _ in range(4)))
+    check("4 updates ព្រមគ្នា → ត្រឡប់ Admin row តែមួយ (idempotent មិន IntegrityError)",
+          len(set(raced_ids)) == 1)
+    async with db_session() as session:
+        rows = await session.scalar(
+            select(func.count()).select_from(Admin).where(Admin.telegram_id == RACER)
+        )
+        check("រក្សាទុក row Tenant តែមួយ", int(rows or 0) == 1)
+        cats = await crud.list_all_categories(session, RACER)
+        check("ហាងដែលឈ្នះការប្រកួត → បានប្រភេទលំនាំដើម ៨ តែម្តង", len(cats) == 8)
 
     print(f"\n{'✅ រំលង' if FAIL == 0 else '❌ មាន failure'} — {PASS}/{PASS + FAIL} checks")
     from database.session import engine

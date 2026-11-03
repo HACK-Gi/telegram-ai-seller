@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # ដំឡើង Qoder CLI ដោយស្វ័យប្រវត្តិ រួចផ្ទៀងផ្ទាត់ថាប្រើបាន។
-#   ./scripts/install_qoder.sh
+#   ./scripts/install_qoder.sh          → VPS/Cloud Shell: ដំឡើង ឬ បញ្ជាក់ថាមានស្រាប់
+#   VERCEL=1 ./scripts/install_qoder.sh → Serverless: រំលង (exit 0 ទ always)
 set -euo pipefail
+
+# ⚠️ Platform Detection — Serverless គ្មាន filesystem អចិន្ត៚យ ហើយ build មិនត្រូវការ CLI ទេ
+if [ -n "${VERCEL:-}" ] || [ -n "${VERCEL_ENV:-}" ] || [ -n "${NETLIFY:-}" ] || [ -n "${AWS_LAMBDA_FUNCTION_NAME:-}" ]; then
+  echo "⏭️  Serverless platform detected — រំលងការដំឡើង Qoder CLI"
+  echo "    (Qoder CLI ដំណើរការបានតែលើ VPS/Cloud Shell/Render/Railway ដែលមាន filesystem និរន្តរភាព)"
+  exit 0
+fi
 
 BIN_NAME="${QODER_CLI_BIN:-qodercli}"
 INSTALL_URL="https://qoder.com/install"

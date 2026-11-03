@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from sqlalchemy import case, delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -1607,7 +1608,16 @@ async def auto_register_user(
         is_active=True,
     )
     session.add(admin)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # StaffGate ហៅរាល់ update → សារពីររបស់អ្នកដដែលមកព្រមគ្នា = បង្កើត row ប្រកួតប្រជែង។
+        # រូបនោះត្រូវបានបង្កើតដោយ coroutine ទី១ រួចហើយ ដូច្នេះយក row នោះ (idempotent)។
+        await session.rollback()
+        raced = await get_admin(session, telegram_id)
+        if raced is None:
+            raise
+        return raced
     await session.refresh(admin)
     # ជំហានទី ៥ — ហាងថ្មីទទួលប្រភេទលំនាំដើម ៨ ជារបស់ខ្លួនឯងភ្លាម ទើប ➕ ផលិតផល
     # ជ្រើសប្រភេទបានភ្លាម ដោយមិនចាំបាច់ Owner បន្ថែមឱ្យ (ហើយមិនចម្លង row អ្នកដទៃទេ)
