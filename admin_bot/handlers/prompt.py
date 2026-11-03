@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, Message
 
 from admin_bot import keyboards, render
 from admin_bot.owner_gate import OwnerOnly
+from admin_bot.scope import Scope
 from ai_engine import AIAllFailed, AIError, get_engine
 from ai_engine.chain import SAFE_REPLY
 from ai_engine.prompting import compose_system_prompt, format_catalog
@@ -44,11 +45,17 @@ class TestPrompt(StatesGroup):
     question = State()
 
 
-async def current_composed(session) -> str:
-    """Prompt ពេញលេញ (persona + catalog + few-shot) ដូចដែល AI នឹងទទួលបាន។"""
+async def current_composed(session, owner_admin_id: int) -> str:
+    """Prompt ពេញលេញ (persona + catalog + few-shot) ដូចដែល AI នឹងទទួលបាន។
+
+    catalog គត់តែផលិតផល**ក្នុងហាងរបស់អ្នកមើល** (ជំហានទី ៤) ទើប Owner ពិនិត្យ prompt
+    មិនឃើញឈ្មោះ/តម្លៃផលិតផលរបស់ Tenant ផ្សេង ពេល screenshot ឬ copy ទៅក្រៅ។
+    """
     base = await crud.get_setting(session, "system_prompt")
     few_shot = await crud.get_setting(session, "few_shot")
-    products, _total = await crud.list_products(session, page=1, per_page=100)
+    products, _total = await crud.list_products(
+        session, page=1, per_page=100, owner_admin_id=owner_admin_id
+    )
     return compose_system_prompt(base, few_shot, format_catalog(products))
 
 
@@ -73,12 +80,12 @@ async def cb_prompt_root(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data == "prompt:show", OwnerOnly())
-async def cb_show(callback: CallbackQuery) -> None:
+async def cb_show(callback: CallbackQuery, scope: Scope) -> None:
     if callback.message is None:
         await callback.answer()
         return
     async with db_session() as session:
-        composed = await current_composed(session)
+        composed = await current_composed(session, scope.owner_id)
     await callback.answer()
     await render.send_long(callback.message, f"🧠 <b>Prompt ដែល AI ទទួលបានឥឡូវ</b>\n\n{composed}")
 
@@ -217,7 +224,7 @@ async def cb_test(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data.startswith("ptest:"), OwnerOnly())
-async def cb_ptest(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_ptest(callback: CallbackQuery, state: FSMContext, scope: Scope) -> None:
     if callback.message is None:
         await callback.answer()
         return
@@ -237,12 +244,12 @@ async def cb_ptest(callback: CallbackQuery, state: FSMContext) -> None:
     question = TEST_CASES[index]
     await callback.message.edit_text(f"⏳ កំពុងសាកល្បង [{index + 1}] «{esc(question)}» …")
     await callback.answer()
-    await run_test(callback.message, question)
+    await run_test(callback.message, question, scope.owner_id)
 
 
-async def run_test(message: Message, question: str) -> None:
+async def run_test(message: Message, question: str, owner_admin_id: int) -> None:
     async with db_session() as session:
-        composed = await current_composed(session)
+        composed = await current_composed(session, owner_admin_id)
     engine = get_engine()
     started = time.monotonic()
     try:
@@ -270,6 +277,6 @@ async def run_test(message: Message, question: str) -> None:
 
 
 @router.message(TestPrompt.question, F.text, OwnerOnly())
-async def md_test(message: Message, state: FSMContext) -> None:
+async def md_test(message: Message, state: FSMContext, scope: Scope) -> None:
     await state.set_state(None)
-    await run_test(message, message.text.strip())
+    await run_test(message, message.text.strip(), scope.owner_id)

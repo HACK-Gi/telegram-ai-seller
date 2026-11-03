@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 
@@ -18,6 +19,7 @@ from database.models import (
     AccountProduct,
     AccountStatus,
     Admin,
+    AdminRole,
     Category,
     Customer,
     Message,
@@ -31,13 +33,16 @@ from database.models import (
 )
 from helpers import utcnow
 
+log = logging.getLogger("db.crud")
+
 # តួនាទីដែលរាប់ជា «សារដែលបានផ្ញើចេញ» សម្រាប់កម្រិត 50/h · 200/ថ្ងៃ។
 # រួមទាំង `owner` ដោយចេតនា៖ សារដែលម្ចាស់វាយដោយខ្លួនឯងក៏ចេញពីគណនីតែមួយដែរ។
 SEND_ROLES = ("assistant", "owner")
 
 
 # ============================================================
-# RBAC helpers — None = គ្មានវិសាលភាព (owner ឃើញទាំងអស់), () = គ្មានសិទ្ធិអ្វីសោះ
+# Scope helpers — `()` = គ្មានសិទ្ធិអ្វីសោះ · `None` = គ្មានចម្រោះ (internal/runtime តែប៉ុណ្ណោះ)
+# Path អានទាំងអស់ក្នុង Panel ត្រូវបញ្ជូន `scope.owner_id` / `scope.ids` ជានិច្ច កុំទុក None
 # ============================================================
 
 
@@ -63,6 +68,19 @@ async def count_accounts_by_owner(session: AsyncSession, owner_admin_id: int) ->
     return int(
         (await session.scalar(select(func.count(Account.id)).where(Account.owner_admin_id == owner_admin_id))) or 0
     )
+
+
+async def count_products_by_owner(session: AsyncSession, owner_admin_id: int) -> int:
+    return int(
+        (await session.scalar(select(func.count(Product.id)).where(Product.owner_admin_id == owner_admin_id))) or 0
+    )
+
+
+async def count_orders_by_owner(session: AsyncSession, account_ids: tuple[int, ...]) -> int:
+    """Order គ្មានជួងម្ចាស់ផ្ទាល់ខ្លួន — វា derive ពីគណនី ដូច្នេះរាប់តាម `scope.ids`។"""
+    if no_access(account_ids):
+        return 0
+    return int((await session.scalar(select(func.count(Order.id)).where(Order.account_id.in_(account_ids)))) or 0)
 
 
 # ============================================================
@@ -322,78 +340,139 @@ async def all_settings(session: AsyncSession) -> dict[str, str]:
 
 
 # ============================================================
-# Categories (ប្រភេទអីវ៉ាន់)
+# Categories (ប្រភេទអីវ៉ាន់) — per-tenant
+#
+# ច្បាប់ Data Isolation (ជំហានទី ៥)៖ រាល់ function អាន/សរសេរប្រភេទ ត្រូវទទួល
+# `owner_admin_id: int` **ចាំបាច់** (Optional មិនទៀតទេ) ព្រោះ None = មិន filter =
+# ឃើញប្រភេទគ្រប់ Tenant។ គ្មាន function ណានៅក្នុងម៉ឺនុយនេះត្រូវហៅដោយគ្មានម្ចាស់ទេ។
 # ============================================================
 
-async def list_all_categories(session: AsyncSession, active_only: bool = False) -> list[Category]:
-    stmt = select(Category)
+async def list_all_categories(
+    session: AsyncSession, owner_admin_id: int, active_only: bool = False
+) -> list[Category]:
+    stmt = select(Category).where(Category.owner_admin_id == owner_admin_id)
     if active_only:
         stmt = stmt.where(Category.is_active.is_(True))
     stmt = stmt.order_by(Category.display_order, Category.id)
     return list((await session.scalars(stmt)).all())
 
 
-async def get_category(session: AsyncSession, category_id: int) -> Category | None:
-    return await session.get(Category, category_id)
+async def get_category(session: AsyncSession, category_id: int, *, owner_admin_id: int) -> Category | None:
+    """IDOR guard: ត្រឡប់ None ភ្លាម បើប្រភេទនេះជារបស់ម្ចាស់ផ្សេង (មិនមែន error ដាច់ដោយឡែកទេ)។"""
+    return await session.scalar(
+        select(Category).where(Category.id == category_id, Category.owner_admin_id == owner_admin_id)
+    )
 
 
-async def get_category_by_code(session: AsyncSession, code: str) -> Category | None:
-    return await session.scalar(select(Category).where(Category.code == code.strip().lower()))
+async def get_category_by_code(session: AsyncSession, code: str, *, owner_admin_id: int) -> Category | None:
+    return await session.scalar(
+        select(Category)
+        .where(Category.code == code.strip().lower(), Category.owner_admin_id == owner_admin_id)
+        .limit(1)
+    )
 
 
-async def get_category_by_name(session: AsyncSession, name: str) -> Category | None:
+async def get_category_by_name(session: AsyncSession, name: str, *, owner_admin_id: int) -> Category | None:
     key = (name or "").strip().lower()
     if not key:
         return None
+    scoped = [Category.owner_admin_id == owner_admin_id]
     for column in (Category.name_kh, Category.name_en, Category.code):
-        category = await session.scalar(select(Category).where(func.lower(column) == key).limit(1))
+        category = await session.scalar(
+            select(Category).where(func.lower(column) == key, *scoped).limit(1)
+        )
         if category is not None:
             return category
-    for category in await list_all_categories(session):  # ទន់: «game» → game_acc
+    own = await list_all_categories(session, owner_admin_id)
+    for category in own:  # ទន់: «game» → game_acc
         if category.code.startswith(key + "_") or category.code == key:
             return category
-    for category in await list_all_categories(session):  # កូនស្នាម: «ហ្គេម» ⊂ «គណនីហ្គេម»
+    for category in own:  # កូនស្នាម: «ហ្គេម» ⊂ «គណនីហ្គេម»
         if key in f"{category.name_kh or ''}".lower() or key in f"{category.name_en or ''}".lower():
             return category
     return None
 
 
-async def create_category(session: AsyncSession, **fields) -> tuple[Category | None, str]:
-    """ត្រឡប់ (category, "") ឬ (None, មូលហេតុបរាជ័យ)។"""
+async def seed_default_categories(session: AsyncSession, owner_admin_id: int) -> int:
+    """បញ្ចូលប្រភេទលំនាំដើម ៨ ជា row ផ្ទាល់ខ្លួនរបស់ Tenant ថ្មី — idempotent តាម code។
+
+    ហៅតាម `auto_register_user` ទើបម្ចាស់ហាងថ្មីមាន menu ប្រភេទសាកល្បងលក់បានភ្លាម
+    ដោយមិនចាំបាច់បង្កើតពីដៃ ហើយវាមិនប៉ះប្រភេទរបស់ Tenant ផ្សេងដែល code ដូចគ្នាទេ។
+    """
+    existing = {item.code for item in await list_all_categories(session, owner_admin_id)}
+    added = 0
+    for order, item in enumerate(DEFAULT_CATEGORIES):
+        if item["code"] in existing:
+            continue
+        session.add(
+            Category(
+                code=item["code"],
+                prefix=item.get("prefix", ""),
+                name_kh=item["name_kh"],
+                name_en=item.get("name_en", ""),
+                icon=item.get("icon", "📦"),
+                description=item.get("description", ""),
+                display_order=order * 10,
+                is_active=True,
+                owner_admin_id=owner_admin_id,
+            )
+        )
+        added += 1
+    if added:
+        await session.commit()
+    return added
+
+
+async def create_category(session: AsyncSession, *, owner_admin_id: int, **fields) -> tuple[Category | None, str]:
+    """ត្រឡប់ (category, "") ឬ (None, មូលហេតុបរាជ័យ)។
+
+    code ដូចគ្នា អនុញ្ញាតឱ្យក្នុងមួយម្ចាស់ ប៉ុន្តែហាមក្នុងហាងតែមួយ (មើល uq_categories_owner_code)។
+    """
     code = str(fields.get("code", "")).strip().lower()
     fields["code"] = code
     if not code or not str(fields.get("name_kh", "")).strip():
         return None, "ត្រូវការ code និង name_kh"
-    if await get_category_by_code(session, code) is not None:
+    if await get_category_by_code(session, code, owner_admin_id=owner_admin_id) is not None:
         return None, f"code '{code}' មានស្រាប់ហើយ"
     order = int(fields.pop("display_order", 0) or 0)
     if order == 0:
-        top = await session.scalar(select(func.max(Category.display_order)))
+        top = await session.scalar(
+            select(func.max(Category.display_order)).where(Category.owner_admin_id == owner_admin_id)
+        )
         order = int(top or 0) + 10
-    category = Category(display_order=order, **fields)
+    category = Category(display_order=order, owner_admin_id=owner_admin_id, **fields)
     session.add(category)
     await session.flush()
     return category, ""
 
 
-async def update_category(session: AsyncSession, category_id: int, **values) -> None:
+async def update_category(session: AsyncSession, category_id: int, *, owner_admin_id: int, **values) -> None:
+    """កែបានតែប្រភេទរបស់ម្ចាស់នេះ — មិនដែល filter តាម id ទោលទេ (IDOR)។"""
+    clause = select(Category.id).where(Category.id == category_id, Category.owner_admin_id == owner_admin_id)
+    if await session.scalar(clause) is None:
+        return
     if "code" in values:
         values["code"] = str(values["code"]).strip().lower()
-        dup = await get_category_by_code(session, values["code"])
+        dup = await get_category_by_code(session, values["code"], owner_admin_id=owner_admin_id)
         if dup is not None and dup.id != category_id:
             return
     await session.execute(update(Category).where(Category.id == category_id).values(**values))
     await session.flush()
 
 
-async def delete_category(session: AsyncSession, category_id: int) -> str:
-    """'deleted' | 'blocked' (មានផលិតផលកាន់កាប់) | 'missing' — ផលិតផលចាស់ត្រូវផ្លាស់ទៅ gen មុនសម្រេច។"""
-    category = await session.get(Category, category_id)
+async def delete_category(session: AsyncSession, category_id: int, *, owner_admin_id: int) -> str:
+    """'deleted' | 'blocked' (មានផលិតផលកាន់កាប់) | 'missing' — ផលិតផលចាស់ត្រូវផ្លាស់ទៅ gen មុនសម្រេច។
+
+    'missing' គ្របទាំងករណីគ្មាន row និងករណី row នោះជារបស់ម្ចាស់ផ្សេង (IDOR)។
+    """
+    category = await get_category(session, category_id, owner_admin_id=owner_admin_id)
     if category is None:
         return "missing"
     used = int(
         await session.scalar(
-            select(func.count(Product.id)).where(Product.category_id == category_id)
+            select(func.count(Product.id)).where(
+                Product.category_id == category_id, Product.owner_admin_id == owner_admin_id
+            )
         )
         or 0
     )
@@ -405,43 +484,64 @@ async def delete_category(session: AsyncSession, category_id: int) -> str:
 
 
 async def category_product_counts(
-    session: AsyncSession, *, owner_admin_id: int | None = None
+    session: AsyncSession, *, owner_admin_id: int
 ) -> dict[int, int]:
-    """រាប់ផលិតផលក្នុងប្រភេទនីមួយៗ — `owner_admin_id` = រាប់តែផលិតផលរបស់ admin នោះ។"""
-    stmt = select(Product.category_id, func.count(Product.id)).where(Product.category_id.is_not(None))
-    if owner_admin_id is not None:
-        stmt = stmt.where(Product.owner_admin_id == owner_admin_id)
+    """រាប់ផលិតផលក្នុងប្រភេទនីមួយៗ — រាប់តែផលិតផលរបស់ admin នោះ។"""
+    stmt = (
+        select(Product.category_id, func.count(Product.id))
+        .where(Product.category_id.is_not(None), Product.owner_admin_id == owner_admin_id)
+    )
     rows = await session.execute(stmt.group_by(Product.category_id))
     return {int(cid): int(count) for cid, count in rows.all() if cid is not None}
 
 
-async def next_product_code(session: AsyncSession, category: Category) -> str:
-    """GAME-001 ទម្រង់ — prefix ពី category.prefix, លេខបន្តតាម prefix ដែលមានស្រាប់។"""
+async def next_product_code(
+    session: AsyncSession, category: Category, owner_admin_id: int
+) -> str:
+    """GAME-001 ទម្រង់ — prefix ពី category.prefix រាប់តែក្នុងហាងរបស់ `owner_admin_id`។
+
+    ម្ចាស់ពីរនាក់ អាចមាន GAME-001 ផ្ទាល់ខ្លួនបាន (unique តាម (owner, code) ប៉ុណ្ណោះ)។
+    """
     prefix = category.product_prefix
-    rows = (await session.scalars(select(Product.product_code).where(Product.product_code.like(f"{prefix}-%")))).all()
+    stmt = select(Product.product_code).where(
+        Product.product_code.like(f"{prefix}-%"), Product.owner_admin_id == owner_admin_id
+    )
+    rows = (await session.scalars(stmt)).all()
+    taken = {str(code) for code in rows if code}
     highest = 0
-    for code in rows:
-        tail = str(code or "").rsplit("-", 1)[-1]
+    for code in taken:
+        tail = code.rsplit("-", 1)[-1]
         if tail.isdigit():
             highest = max(highest, int(tail))
-    return f"{prefix}-{highest + 1:03d}"
+    number = highest + 1
+    while f"{prefix}-{number:03d}" in taken:  # លេខទទេ (គេលុប) ឬ code ដែលដូចគ្នាពីមុន
+        number += 1
+    return f"{prefix}-{number:03d}"
 
 
 async def _ensure_product_code(session: AsyncSession, product: Product) -> None:
-    """បើផលិតផលគ្មាន category_id → ផ្សំតាមឈ្មោះ string ឬ gen fallback រួចបង្កើត product_code។"""
+    """បើផលិតផលគ្មាន category_id → ផ្សំតាមឈ្មោះ string ឬ gen fallback រួចបង្កើត product_code។
+
+    គត់តែប្រភេទ**ក្នុងហាងរបស់ផលិតផលនេះ** (ជំហានទី ៥) ទើប A មិនភ្ជាប់ផលិតផល
+    របស់ខ្លួនទៅ category_id របស់ B ដោយចៃដន្យ។ ផលិតផលគ្មានម្ចាស់ → មិនបង្កើត code (ទុក NULL)
+    ជំនួសការទាយ ព្រោះ code unique តាម (owner, code) បើគ្មាន owner គឺគ្មានវិសាលភាព។
+    """
+    owner_id = product.owner_admin_id
+    if owner_id is None:
+        return
     if product.category_id is None:
-        category = await get_category_by_name(session, product.category)
+        category = await get_category_by_name(session, product.category, owner_admin_id=owner_id)
         if category is None:
-            category = await get_category_by_code(session, "gen")
+            category = await get_category_by_code(session, "gen", owner_admin_id=owner_id)
         if category is not None:
             product.category_id = category.id
     if product.category_id is not None:
-        category = await session.get(Category, product.category_id)
+        category = await get_category(session, product.category_id, owner_admin_id=owner_id)
         if category is not None:
             if product.category != category.name_kh:
                 product.category = category.name_kh  # mirror ឈ្មោះ កុំឱ្យ path ចាស់ដែល filter តាម string បាត់
             if product.product_code is None:
-                product.product_code = await next_product_code(session, category)
+                product.product_code = await next_product_code(session, category, owner_id)
 
 
 # ============================================================
@@ -1467,20 +1567,101 @@ async def mark_code_sent(session: AsyncSession, order_id: int) -> None:
 # Admins
 # ============================================================
 
-async def list_admins(session: AsyncSession) -> list[Admin]:
-    return list((await session.scalars(select(Admin).order_by(Admin.id))).all())
+async def list_admins(session: AsyncSession, *, role: str | None = None, limit: int = 100) -> list[Admin]:
+    """Admin/Shop-owner ដែល «បើក» សកម្ម ថ្មីបំផុតមុន — OWNER មិនរាប់ (គេតាំងតាម env)។
+
+    `role` = ចម្រោះតែតួនាទីមួយ (ឧ. `AdminRole.ADMIN` សម្រាប់បញ្ជី Admin ជំនួយ)។
+    កំណត់ ១០០ ព្រោះ auto-register បង្កើត row សម្រាប់គ្រប់អ្នកប្រើ ទើបបញ្ជីទាំងស្រុង
+    ពេញសារតែវា 5000 តួអក្សរ ហើយ Panel edit បរាជ័យ។
+    """
+    stmt = select(Admin).where(Admin.is_active.is_(True), Admin.role != AdminRole.OWNER)
+    if role is not None:
+        stmt = stmt.where(Admin.role == role)
+    stmt = stmt.order_by(Admin.id.desc()).limit(limit)
+    return list((await session.scalars(stmt)).all())
+
+
+async def get_admin(session: AsyncSession, telegram_id: int) -> Admin | None:
+    return await session.scalar(select(Admin).where(Admin.telegram_id == telegram_id))
+
+
+async def auto_register_user(
+    session: AsyncSession,
+    telegram_id: int,
+    first_name: str = "",
+    username: str = "",
+) -> Admin:
+    """អ្នកប្រើណាមួយ = ម្ចាស់ហាង (Tenant) ផ្ទាល់ខ្លួន ដោយមិនត្រូវការ «Add Admin» មុន។
+
+    រក្សាទុកតែ ID/ឈ្មោះ/@username — គ្មានទិន្នន័យលក់របស់គេក្នុង row នេះទេ។ ការ call
+    ពីរដងលើ ID ដូចគ្នាត្រឡប់ row ដើម (idempotent) ព្រោះ StaffGate ហៅរាល់ update។
+    """
+    admin = await get_admin(session, telegram_id)
+    if admin is not None:
+        return admin
+    admin = Admin(
+        telegram_id=telegram_id,
+        name=(first_name or f"Shop {telegram_id}")[:200],
+        username=(username or "")[:100],
+        role=AdminRole.OWNER if telegram_id == settings.owner_id else AdminRole.SHOP_OWNER,
+        is_active=True,
+    )
+    session.add(admin)
+    await session.commit()
+    await session.refresh(admin)
+    # ជំហានទី ៥ — ហាងថ្មីទទួលប្រភេទលំនាំដើម ៨ ជារបស់ខ្លួនឯងភ្លាម ទើប ➕ ផលិតផល
+    # ជ្រើសប្រភេទបានភ្លាម ដោយមិនចាំបាច់ Owner បន្ថែមឱ្យ (ហើយមិនចម្លង row អ្នកដទៃទេ)
+    await seed_default_categories(session, telegram_id)
+    log.info("Auto-registered shop owner %s (role=%s)", telegram_id, admin.role)
+    return admin
+
+
+async def count_tenants(session: AsyncSession, *, role: str | None = None) -> int:
+    """ចំនួន row ក្នុង `admins` — `role=SHOP_OWNER` = ចំនួនម្ចាស់ហាង (Tenant) ទាំងស្រុង។"""
+    stmt = select(func.count(Admin.id))
+    if role is not None:
+        stmt = stmt.where(Admin.role == role)
+    return int((await session.scalar(stmt)) or 0)
+
+
+async def platform_totals(session: AsyncSession) -> tuple[int, int]:
+    """(ចំនួនម្ចាស់ហាង, ចំនួន Order សរុប) — aggregate គត់ដែល Owner ឃើញ cross-tenant។
+
+    System path តែមួយគត់ដែលរាប់គ្មានវិសាលភាព ហើយ<b>មិនត្រឡប់</b>ឈ្មោះ ID ទិន្នន័យ
+    លក់ ឬ row ណាមួយទេ។ Handler ផ្សេងកុំប្រើ — ត្រូវហៅ function ដែលត្រូវការ scope។
+    """
+    tenants = int((await session.scalar(select(func.count(Admin.id)).where(Admin.is_active.is_(True)))) or 0)
+    orders = int((await session.scalar(select(func.count(Order.id)))) or 0)
+    return tenants, orders
 
 
 async def add_admin(session: AsyncSession, telegram_id: int, name: str = "", role: str = "admin") -> bool:
-    exists = await session.scalar(select(Admin).where(Admin.telegram_id == telegram_id))
+    """បន្ថែម ឬបើក Admin ដែលធ្លាប់បិទ — row តែមួយក្នុងមួយ telegram_id ជានិច្ច។"""
+    exists = await get_admin(session, telegram_id)
     if exists is not None:
-        return False
+        if exists.is_active and exists.role == role:
+            return False
+        exists.is_active = True
+        exists.role = role
+        if name:
+            exists.name = name[:200]
+        await session.commit()
+        return True
     session.add(Admin(telegram_id=telegram_id, name=name, role=role))
+    await session.commit()
     return True
 
 
-async def remove_admin(session: AsyncSession, telegram_id: int) -> None:
-    await session.execute(delete(Admin).where(Admin.telegram_id == telegram_id, Admin.role != "owner"))
+async def remove_admin(session: AsyncSession, telegram_id: int) -> bool:
+    """បិទ Admin (`is_active=False`) ជំនួសលុប row — បើលុប គេចុច `/start` ម្តងទៀត
+    auto-register នឹងបង្កើតគេឡើងវិញភ្លាម ហើយប្រវត្តិទិន្នន័យរបស់គេបាត់ខ្លួនឯង។
+    """
+    admin = await get_admin(session, telegram_id)
+    if admin is None or admin.role == AdminRole.OWNER:
+        return False
+    admin.is_active = False
+    await session.commit()
+    return True
 
 
 async def is_staff(session: AsyncSession, user_id: int) -> bool:
@@ -1488,7 +1669,9 @@ async def is_staff(session: AsyncSession, user_id: int) -> bool:
         return True
     if user_id in settings.admin_ids:
         return True
-    row = await session.scalar(select(Admin).where(Admin.telegram_id == user_id))
+    row = await session.scalar(
+        select(Admin).where(Admin.telegram_id == user_id, Admin.is_active.is_(True))
+    )
     return row is not None
 
 

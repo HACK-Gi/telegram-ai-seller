@@ -58,11 +58,16 @@ class Setting(Base):
 
 # ---------- Products + Stock ----------
 class Category(Base):
-    """ប្រភេទអីវ៉ាន់ (Game Accounts, AI Pro, Clothing…) — ប៊ូតុង menu សម្រាប់អតិថិជន។"""
+    """ប្រភេទអីវ៉ាន់ (Game Accounts, AI Pro, Clothing…) — ប៊ូតុង menu សម្រាប់អតិថិជន។
+
+    ជំហានទី ៥ — per-tenant: រាល់ម្ចាស់ហាងមានបញ្ជីប្រភេទផ្ទាល់ខ្លួន ទើប A មិនឃើញ/
+    មិនកែរបស់ B។ `code` unique **ក្នុងមួយម្ចាស់** តែប៉ុណ្ណោះ (game_acc របស់ A ≠ របស់ B)។
+    """
     __tablename__ = "categories"
+    __table_args__ = (UniqueConstraint("owner_admin_id", "code", name="uq_categories_owner_code"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)  # game_acc
+    code: Mapped[str] = mapped_column(String(32), index=True)  # game_acc (unique ក្នុងម្ចាស់)
     prefix: Mapped[str] = mapped_column(String(8), default="")  # GAME (ទំនេរ = derive ពី code)
     name_kh: Mapped[str] = mapped_column(String(100))
     name_en: Mapped[str] = mapped_column(String(100), default="")
@@ -70,6 +75,9 @@ class Category(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     display_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # RBAC — ម្ចាស់ហាងដែលបង្កើតប្រភេទនេះ។ NULL ក្រោយ migration មានន័យ «មិនទាន់ដាក់»
+    # (SQLite មិនអនុញ្ញាត NOT NULL លើជួងថ្មីក្នុងតារាងដែលមានទិន្នន័យដោយគ្មាន literal default)
+    owner_admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
 
     @property
     def product_prefix(self) -> str:
@@ -79,6 +87,8 @@ class Category(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    # កូដផលិតផល Unique **ក្នុងហាងរបស់ម្ចាស់នីមួយៗ** (GAME-001 របស់ A ≠ របស់ B)
+    __table_args__ = (UniqueConstraint("owner_admin_id", "product_code", name="uq_product_owner_code"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
@@ -90,7 +100,8 @@ class Product(Base):
     image_file_ids: Mapped[list] = mapped_column(JSON, default=list)
     image_paths: Mapped[list] = mapped_column(JSON, default=list)
     # ជំហានទី ៣ — ប្រភេទ + កូដផលិតផល (additive; `category` string នៅតែជា name_kh mirror សម្រាប់ backward-compat)
-    product_code: Mapped[str | None] = mapped_column(String(32), nullable=True, unique=True, index=True)
+    # unique រួមជាមួយ owner_admin_id (មើល `__table_args__`) មិនមែន global ទេ
+    product_code: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     category_id: Mapped[int | None] = mapped_column(
         ForeignKey("categories.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -318,13 +329,25 @@ class Subscriber(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
 
 
-# ---------- Admins ----------
+# ---------- Admins (= Shop owner / Tenant) ----------
+class AdminRole:
+    OWNER = "owner"            # OWNER_ID — សិទ្ធិ global (settings, admins, backup) ប៉ុណ្ណោះ
+    SHOP_OWNER = "shop_owner"  # អ្នកប្រើដែល auto-register តាម /start = ម្ចាស់ហាងរបស់ខ្លួនឯង
+    ADMIN = "admin"            # staff ចាស់ដែល owner បញ្ចូលដោយដៃ
+
+    ALL = (OWNER, SHOP_OWNER, ADMIN)
+
+
 class Admin(Base):
+    """ម្នាក់ៗជា Tenant ដាច់ដោយឡែក — `telegram_id` សម្គាល់វិសាលភាពទិន្នន័យទាំងអស់។"""
+
     __tablename__ = "admins"
     __table_args__ = (UniqueConstraint("telegram_id", name="uq_admin_telegram_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     telegram_id: Mapped[int] = mapped_column(BigInteger, index=True)
     name: Mapped[str] = mapped_column(String(200), default="")
-    role: Mapped[str] = mapped_column(String(16), default="admin")  # owner | admin
+    username: Mapped[str] = mapped_column(String(100), default="")
+    role: Mapped[str] = mapped_column(String(16), default=AdminRole.SHOP_OWNER)  # owner | shop_owner | admin
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

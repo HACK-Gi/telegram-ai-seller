@@ -15,7 +15,7 @@ from database.models import Base
 
 log = logging.getLogger("db.migrate")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 # SQLite ហាម NOT NULL ដោយគ្មាន literal default, ហាម UNIQUE/PRIMARY KEY លើជួងថ្មី,
 # ហើយជួងដែលមាន REFERENCES ត្រូវតែ default NULL — ដូច្នេះ child FK ទាំងអស់ជា plain nullable។
@@ -67,6 +67,13 @@ ADDITIVE_COLUMNS: dict[str, list[tuple[str, str]]] = {
     ],
     "categories": [
         ("prefix", "VARCHAR(8) NOT NULL DEFAULT ''"),
+        # ជំហានទី ៥ — ប្រភេទជា per-tenant (មើល _swap_category_code_index សម្រាប់ unique ថ្មី)
+        ("owner_admin_id", "BIGINT"),
+    ],
+    # ជំហានទី ៤ — គ្រប់អ្នកប្រើ = Tenant ម្ចាស់ហាង (auto-register តាម StaffGate)
+    "admins": [
+        ("username", "VARCHAR(100) NOT NULL DEFAULT ''"),
+        ("is_active", "BOOLEAN NOT NULL DEFAULT 1"),
     ],
 }
 
@@ -80,14 +87,19 @@ INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_orders_code_unsent ON orders (account_id, id) "
     "WHERE code_sent_at IS NULL AND status = 'delivered'",
     "CREATE INDEX IF NOT EXISTS ix_stock_codes_product_status ON stock_codes (product_id, status)",
-    # រត់បន្ទាប់ពី backfill — NULL ច្រើនមិនប៉ះ unique ទេ ប៉ុន្តែ code ដែលស្ទួនគ្នាត្រូវរាំង
-    "CREATE UNIQUE INDEX IF NOT EXISTS ix_products_product_code ON products (product_code)",
+    # ជំហានទី ៤ — product_code unique **ក្នុងមួយម្ចាស់** មិនមែន global (មើល _swap_product_code_index)
+    "CREATE INDEX IF NOT EXISTS ix_products_product_code ON products (product_code)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_product_owner_code ON products (owner_admin_id, product_code)",
     # RBAC — គ្រប់ read-path រាំងតាមម្ចាស់ ដូច្នេះជួងនេះត្រូវមាន index (ឈ្មោះដូច create_all)
     "CREATE INDEX IF NOT EXISTS ix_telegram_accounts_owner_admin_id ON telegram_accounts (owner_admin_id)",
     "CREATE INDEX IF NOT EXISTS ix_products_owner_admin_id ON products (owner_admin_id)",
     "CREATE INDEX IF NOT EXISTS ix_qrcodes_owner_admin_id ON qrcodes (owner_admin_id)",
     # ជំហានទី ២.២ — userbot ស្វែង QR តាមគណនីលក់ រាល់ការទិញ
     "CREATE INDEX IF NOT EXISTS ix_qrcodes_account_id ON qrcodes (account_id)",
+    # ជំហានទី ៥ — ប្រភេទ per-tenant: code unique ក្នុងមួយម្ចាស់ មិនមែន global
+    # (_swap_category_code_index លុប ix_categories_code របៀប UNIQUE ចេញមុន ទើបនេះតាំងបាន)
+    "CREATE INDEX IF NOT EXISTS ix_categories_owner_admin_id ON categories (owner_admin_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_categories_owner_code ON categories (owner_admin_id, code)",
 )
 
 
@@ -100,20 +112,48 @@ def _schema_version(conn: Connection) -> int:
     return int(conn.exec_driver_sql("PRAGMA user_version").fetchone()[0] or 0)
 
 
-def _seed_categories(conn: Connection) -> int:
-    """បញ្ចូលប្រភេទលំនាំដើម ៧ + «ទូទៅ» (fallback) — idempotent តាម code។"""
+def _seed_categories(conn: Connection, owner_id: int | None) -> int:
+    """បញ្ចូលប្រភេទលំនាំដើម ៧ + «ទូទៅ» (fallback) **ឱ្យតែម្ចាស់ដើម** — idempotent តាម (owner, code)។
+
+    Tenant ថ្មីម្នាក់ៗ ទទួលបញ្ជីដូចគ្នានេះពី `crud.seed_default_categories` ពេល auto-register
+    ទើបប្រភេទរបស់ A និង B ជា row ដាច់ដោយឡែកពីគ្នា។ គ្មាន OWNER_ID → រំលង (មិនបង្កើត
+    row ដែលគ្មានម្ចាស់ ដែលអ្នកណាក៏មិនឃើញនោះទេ)។
+    """
     from database.crud import DEFAULT_CATEGORIES
 
+    if owner_id is None:
+        return 0
     added = 0
     for order, item in enumerate(DEFAULT_CATEGORIES):
         result = conn.exec_driver_sql(
-            "INSERT INTO categories (code, prefix, name_kh, name_en, icon, description, display_order, is_active) "
-            "VALUES (:code, :prefix, :name_kh, :name_en, :icon, :description, :display_order, 1) "
-            "ON CONFLICT(code) DO NOTHING",
-            {**item, "display_order": order * 10},
+            "INSERT INTO categories (code, prefix, name_kh, name_en, icon, description, display_order, "
+            "is_active, owner_admin_id) "
+            "VALUES (:code, :prefix, :name_kh, :name_en, :icon, :description, :display_order, 1, :owner) "
+            "ON CONFLICT(owner_admin_id, code) DO NOTHING",
+            {**item, "display_order": order * 10, "owner": owner_id},
         )
         added += int(result.rowcount or 0)
     return added
+
+
+def _swap_category_code_index(conn: Connection) -> int:
+    """ដូរ category code ពី unique global → unique ក្នុងមួយម្ចាស់។
+
+    ត្រូវរត់ **មុន** `_seed_categories` ព្រោះ `ON CONFLICT(owner_admin_id, code)` ត្រូវការ
+    unique លើគូនេះសិន ហើយ unique លើ code ទោលចាស់នឹងបដិសេឌ្ឍ ប្រភេទឈ្មោះដូចគ្នា
+    រវាងម្ចាស់ពីរនាក់។ SQLite បង្កើត unique លើ column តាម index ដាច់ដោយឡែក ទើបលុបបាន។
+    """
+    row = conn.exec_driver_sql(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ix_categories_code' "
+        "AND sql LIKE '%UNIQUE%'"
+    ).fetchone()
+    if row is not None:
+        conn.exec_driver_sql("DROP INDEX ix_categories_code")
+    conn.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_categories_owner_code "
+        "ON categories (owner_admin_id, code)"
+    )
+    return 0 if row is None else 1
 
 
 def _next_code_number(conn: Connection, prefix: str) -> int:
@@ -129,23 +169,31 @@ def _next_code_number(conn: Connection, prefix: str) -> int:
     return highest + 1
 
 
-def _backfill_products(conn: Connection) -> int:
-    """ផលិតផលចាស់ (គ្មាន product_code) → ផ្សំ category_id + បង្កើត code តាម prefix។"""
+def _backfill_products(conn: Connection, owner_id: int | None) -> int:
+    """ផលិតផលចាស់ (គ្មាន product_code) → ផ្សំ category_id + បង្កើត code តាម prefix។
+
+    រាប់តែប្រភេទរបស់ `owner_id` ព្រោះផលិតផលទាំងនេះត្រូវបានដាក់ឱ្យម្ចាស់នោះដែរ
+    (មិនទាញ category_id របស់ Tenant ផ្សេងដែលមាន code ដូចគ្នាទេ)។
+    """
     rows = conn.exec_driver_sql(
         "SELECT id, category FROM products WHERE product_code IS NULL ORDER BY id"
     ).fetchall()
-    if not rows:
+    if not rows or owner_id is None:
         return 0
     cats = conn.exec_driver_sql(
-        "SELECT id, code, prefix, name_kh, name_en FROM categories"
+        "SELECT id, code, prefix, name_kh, name_en FROM categories WHERE owner_admin_id = ?", (owner_id,)
     ).fetchall()
+    if not cats:
+        return 0
     lookup: dict[str, tuple[int, str]] = {}
     for cat_id, code, prefix, name_kh, name_en in cats:
         effective = (str(prefix or "").strip() or str(code).upper().replace("_", ""))[:5]
         for key in (code, name_kh, name_en):
             if key:
                 lookup[str(key).strip().lower()] = (int(cat_id), effective)
-    fallback = conn.exec_driver_sql("SELECT id, prefix, code FROM categories WHERE code = 'gen'").fetchone()
+    fallback = conn.exec_driver_sql(
+        "SELECT id, prefix, code FROM categories WHERE code = 'gen' AND owner_admin_id = ?", (owner_id,)
+    ).fetchone()
     if fallback is None:
         return 0
     fallback_id, fallback_prefix = int(fallback[0]), (str(fallback[1] or "GEN").strip() or "GEN")[:5]
@@ -205,6 +253,22 @@ def _refresh_default_prompts(conn: Connection) -> int:
     return replaced
 
 
+def _swap_product_code_index(conn: Connection) -> int:
+    """ដូរ product_code ពី unique global → unique ក្នុងមួយម្ចាស់។
+
+    SQLite លុប index ចាស់មុន ព្រោះ `CREATE ... IF NOT EXISTS` នឹងរំលងបើឈ្មោះដដែល
+    នៅសល់ (ជា type unique) ហើយម្ចាស់ពីរនាក់ មិនអាចមាន GAME-001 ផ្ទាល់ខ្លួនបានទេ។
+    """
+    row = conn.exec_driver_sql(
+        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='ix_products_product_code' "
+        "AND sql LIKE '%UNIQUE%'"
+    ).fetchone()
+    if row is None:
+        return 0
+    conn.exec_driver_sql("DROP INDEX ix_products_product_code")
+    return 1
+
+
 def _resolve_owner_id(conn: Connection) -> int | None:
     """ID របស់ម្ចាស់គត់ដែលទិន្នន័យចាស់ត្រូវទុកឱ្យ — env ជាអាទិភាព ប៉ុន្តែ DB អាចបញ្ជាក់បាន។"""
     from config import settings
@@ -218,17 +282,17 @@ def _resolve_owner_id(conn: Connection) -> int | None:
     return int(row[0]) if row is not None else None
 
 
-def _backfill_owners(conn: Connection) -> int | None:
-    """ទិន្នន័យចាស់ទាំងអស់ = របស់ម្ចាស់ (staff ថ្មីមិនគួរឃើញអ្វីសោះពេលដំបូង)។
+def _backfill_owners(conn: Connection, owner_id: int | None) -> int | None:
+    """ទិន្នន័យចាស់ទាំងអស់ = របស់ម្ចាស់ដើម (Tenant ថ្មីមិនគួរឃើញអ្វីសោះពេលដំបូង)។
 
-    តែ NULL ដែលនៅសល់ (គ្មាន owner_id ក្នុង env/DB) នៅតែសុវត្ថិភាព ព្រោះ owner ឃើញ
-    គ្រប់យ៉ាងដោយមិន filter តាមជួងនេះទេ រីឯ staff ឃើញតែជួងដែលត្រង់ ID របស់ខ្លួន។
+    ជំហានទី ៥ — គ្មាន «owner ឃើញគ្រប់យ៉ាង» ទៀតទេ: គ្រប់ read-path filter តាម
+    `owner_admin_id` រួមទាំង OWNER ដូច្នេះជួង NULL ត្រូវតែបំពេញ មិនមែនទុកបានទេ
+    (row ដែល NULL = គ្មានទ anyone មើលឃើញ កុំឱ្យឆ្លងវិសាលភាព)។
     """
-    owner_id = _resolve_owner_id(conn)
     if owner_id is None:
         return None
     moved = 0
-    for table in ("telegram_accounts", "products", "qrcodes"):
+    for table in ("telegram_accounts", "products", "qrcodes", "categories"):
         result = conn.exec_driver_sql(
             f"UPDATE {table} SET owner_admin_id = ? WHERE owner_admin_id IS NULL", (owner_id,)  # noqa: S608 — ឈ្មោះតារាងពី constants ខាងលើ
         )
@@ -259,10 +323,23 @@ def _apply(conn: Connection) -> list[str]:
             table.create(conn, checkfirst=True)
             notes.append(f"table {table.name}")
 
-    seeded = _seed_categories(conn)
+    # ជំហានទី ៥ — លំដាប់សំខាន់: ដូរ unique code មុន រួចបំពេញម្ចាស់ចាស់ រួចမှ seed
+    # (មិនធ្វើដូច្នេះ `ON CONFLICT(owner_admin_id, code)` នឹងបោក ឬ seed ចូល row គ្មានម្ចាស់)
+    owner_id = _resolve_owner_id(conn)
+
+    if _swap_category_code_index(conn):
+        notes.append("category code index → per-owner unique")
+
+    owners = _backfill_owners(conn, owner_id)
+    if owners is None:
+        notes.append("owner backfill skipped (no OWNER_ID)")
+    elif owners:
+        notes.append(f"owner backfill +{owners}")
+
+    seeded = _seed_categories(conn, owner_id)
     if seeded:
         notes.append(f"categories seeded +{seeded}")
-    backfilled = _backfill_products(conn)
+    backfilled = _backfill_products(conn, owner_id)
     if backfilled:
         notes.append(f"product_code backfill +{backfilled}")
     # is_sold ចាស់ → status ថ្មី ឱ្យត្រង់គ្នា (idempotent)
@@ -272,11 +349,8 @@ def _apply(conn: Connection) -> list[str]:
     if refreshed:
         notes.append(f"default prompts refreshed ×{refreshed}")
 
-    owners = _backfill_owners(conn)
-    if owners is None:
-        notes.append("owner backfill skipped (no OWNER_ID)")
-    elif owners:
-        notes.append(f"owner backfill +{owners}")
+    if _swap_product_code_index(conn):
+        notes.append("product_code index → per-owner unique")
 
     for ddl in INDEXES:
         conn.exec_driver_sql(ddl)

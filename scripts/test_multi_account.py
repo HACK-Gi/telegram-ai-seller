@@ -43,7 +43,7 @@ from database import crud, db_session, init_db  # noqa: E402
 from database.models import Account  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
-OWNER = Scope(admin_id=1001, is_owner=True, account_ids=None)
+OWNER = Scope(admin_id=1001, is_owner=True, account_ids=())
 STAFF_A = Scope(admin_id=2002, is_owner=False, account_ids=())
 STAFF_B = Scope(admin_id=3003, is_owner=False, account_ids=())
 
@@ -192,14 +192,16 @@ async def main() -> int:
     check("IDOR → session ដើមមិនត្រូវ replace",
           next(r for r in again if r.telegram_user_id == 9001).session_encrypted == before_token)
 
-    print("— ៤) វិសាលភាព: Owner ឃើញទាំងអស់, staff ឃើញតែខ្លួន —")
+    print("— ៤) វិសាលភាព Tenant: ម្ចាស់ហាងនីមួយៗ ឃើញតែគណនីរបស់ខ្លួន (សូម្បីតែ Owner ដើម) —")
     async with db_session() as session:
-        owner_seen = await crud.list_accounts(session, owner_admin_id=None)
+        owner_seen = await crud.list_accounts(session, owner_admin_id=OWNER.admin_id)
         staff_seen = await crud.list_accounts(session, owner_admin_id=STAFF_A.admin_id)
         other_seen = await crud.list_accounts(session, owner_admin_id=STAFF_B.admin_id)
-    check("Owner scope → ឃើញ ៣ គណនី", len(owner_seen) == 3)
+        unfiltered = await crud.list_accounts(session)
+    check("Owner = tenant ធម្មតា → មិនឃើញគណនី staff", len(owner_seen) == 0)
     check("Staff ម្ចាស់គណនី → ឃើញ ៣", len(staff_seen) == 3)
     check("Staff ផ្សេង → មិនឃើញសោះ", len(other_seen) == 0)
+    check("query គ្មាន filter = ៣ (មានតែ path internal ប៉ុណ្ណោះ)", len(unfiltered) == 3)
 
     print("— ៥) គណនី ១០ គណនី (គ្មានកំណត់ពិតប្រាកដ) —")
     for index in range(10):

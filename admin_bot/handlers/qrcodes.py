@@ -119,7 +119,7 @@ async def cb_add_to(callback: CallbackQuery, state: FSMContext, scope: Scope) ->
     if account_id:
         async with db_session() as session:
             account = await crud.get_account(session, account_id, owner_admin_id=scope.owner_id)
-        if account is None or (scope.ids is not None and account_id not in scope.ids):
+        if account is None or account_id not in scope.ids:
             log.warning("IDOR: user=%s qr:addto account=%s", scope.admin_id, account_id)
             await callback.answer("🔒 គណនីនេះមិនមែនរបស់អ្នកទេ", show_alert=True)
             return

@@ -70,6 +70,8 @@ async def show_list(callback: CallbackQuery, state: FSMContext, scope: Scope, pa
     )
     if not orders:
         header += "\n\n<i>អត់មាន Order ក្នុងស្ថានភាពនេះ</i>"
+        if not scope.ids:
+            header += "\n⚠️ <i>ហាងអ្នកមិនទាន់មានគណនី — Order នឹងសូន្យរហូតដល់អ្នក ➕ បន័ែមគណនី</i>"
     if callback.message is None:
         await callback.answer()
         return
@@ -299,6 +301,9 @@ async def md_order_product(message: Message, state: FSMContext, scope: Scope) ->
             await state.set_state(None)
             return
         customer = await crud.get_or_create_customer(session, telegram_id)
+        if account_id is not None:
+            # Order ដោយដៃ ត្រូវភ្ជាប់អតិថិជននឹងគណនីដែលលក់ ទើបគេចូល CRM របស់ tenant នេះ
+            await crud.set_customer_account(session, telegram_id, account_id)
         order = await crud.create_order(
             session,
             customer_id=telegram_id,

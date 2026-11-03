@@ -44,7 +44,7 @@ _sequence = iter(range(1, 100_000))
 
 
 def _user(user_id: int) -> dict:
-    return {"id": user_id, "is_bot": user_id == OWNER, "first_name": "Owner" if user_id == OWNER else "Stranger"}
+    return {"id": user_id, "is_bot": False, "first_name": "Owner" if user_id == OWNER else "Stranger"}
 
 
 def _chat(user_id: int) -> dict:
@@ -237,8 +237,17 @@ async def main() -> int:
     await panel.msg("/menu")
     await panel.msg("/id")
     await panel.msg("/help")
-    for name in ("products", "qr", "prompt", "orders", "customers", "accounts", "analytics", "settings", "admins"):
+    for name in ("products", "qr", "prompt", "orders", "customers", "accounts", "analytics", "settings"):
         await panel.cb(f"menu:{name}")
+    # ជំហានទី ១ — «Admins» ត្រូវលុបចេញពី Panel ទាំងស្រុង (គ្មាន handler, គ្មានប៊ូតុង)
+    mark = panel.mark()
+    await panel.cb("menu:admins", unhandled_ok=True, expect_reply=False)
+    if not panel.says_not_since(mark, "Admins"):
+        panel.errors.append("✗ «Admins» នៅសល់ក្នុង Panel")
+    mark = panel.mark()
+    await panel.msg("/start")
+    if not panel.says_not_since(mark, "Admins"):
+        panel.errors.append("✗ មេនុសំខាន់ នៅបង្ហាញប៊ូតុង Admins")
 
     print("— បង្កើតផលិតផល + Stock —")
     await panel.cb("prod:add")
@@ -248,8 +257,13 @@ async def main() -> int:
     await panel.msg("ហ្គេម")
     await panel.msg("skip")
     async with db_session() as session:
-        products, _total = await crud.list_products(session, page=1, per_page=10)
+        products, _total = await crud.list_products(
+            session, search="Game Key SMOKE", page=1, per_page=10, owner_admin_id=OWNER
+        )
         product_id = next((item.id for item in products if item.name == "Game Key SMOKE"), None)
+        cat_rows = await crud.list_all_categories(session, OWNER)
+        game_row = next((row for row in cat_rows if row.code == "game_acc"), None)
+        game_cat_id = game_row.id if game_row else 0
     if product_id is None:
         panel.errors.append("✗ រកមិនឃើញផលិតផល 'Game Key SMOKE' ក្នុង DB")
     else:
@@ -261,11 +275,8 @@ async def main() -> int:
         await panel.cb("prod:search")
         await panel.msg("SMOKE")
         await panel.cb("prod:categories")
-        async with db_session() as session:
-            cat_rows = await crud.list_all_categories(session)
-            game_cat = next(c for c in cat_rows if c.code == "game_acc")
-            game_cat_id = game_cat.id
-        await panel.cb(f"prod:filter:{game_cat_id}")
+        if game_cat_id:
+            await panel.cb(f"prod:filter:{game_cat_id}")
         await panel.cb("prod:filter:")
 
     print("— 📦 គ្រប់គ្រងប្រភេទ —")
@@ -278,7 +289,7 @@ async def main() -> int:
     await panel.msg("SMK")
     await panel.msg("-")
     async with db_session() as session:
-        smoke_cat = await crud.get_category_by_code(session, "smoke_cat")
+        smoke_cat = await crud.get_category_by_code(session, "smoke_cat", owner_admin_id=OWNER)
         if smoke_cat is None:
             panel.errors.append("✗ មិនបានបង្កើតប្រភេទ smoke_cat")
             smoke_cat_id = None
@@ -298,12 +309,12 @@ async def main() -> int:
     await panel.cb(f"cat:askdel:{smoke_cat_id}")
     await panel.cb(f"cat:del:{smoke_cat_id}")
     async with db_session() as session:
-        if await crud.get_category(session, smoke_cat_id) is not None:
+        if await crud.get_category(session, smoke_cat_id, owner_admin_id=OWNER) is not None:
             panel.errors.append("✗ លុបប្រភេទមិនបាន")
     await panel.cb(f"cat:askdel:{game_cat_id}")
     await panel.cb(f"cat:del:{game_cat_id}")  # blocked — មានផលិតផល
     async with db_session() as session:
-        if await crud.get_category(session, game_cat_id) is None:
+        if await crud.get_category(session, game_cat_id, owner_admin_id=OWNER) is None:
             panel.errors.append("✗ ប្រភេទដែលមានផលិតផល ត្រូវតែលុបមិនបាន")
     await panel.msg("/addcategory")
     await panel.msg("smoke_abandoned")
@@ -354,6 +365,12 @@ async def main() -> int:
             panel.errors.append(f"✗ វិធីបង្កើត QR ស្វ័យប្រវត្តិ នៅមាន ({gone})")
 
     print("— Order ដោយដៃ → Confirm & Deliver —")
+    # Order ដោយដៃ ត្រូវការគណនីរបស់ tenant នេះខ្លួនឯង (មិនមែន «Owner ឃើញទាំងអស់» ទៀតទេ)
+    async with db_session() as session:
+        account = await crud.create_account(
+            session, "+85512999000", "SMOKE-NOT-A-REAL-SESSION", owner_admin_id=OWNER
+        )
+        account_id = account.id
     await panel.cb("ord:add")
     await panel.msg(str(CUSTOMER_TG))
     await panel.msg(str(product_id))
@@ -407,9 +424,6 @@ async def main() -> int:
 
     print("— គណនី + Analytics + Settings —")
     await panel.cb("acc:howto")
-    async with db_session() as session:
-        account = await crud.create_account(session, "+85512999000", "SMOKE-NOT-A-REAL-SESSION")
-        account_id = account.id
     await panel.cb("menu:accounts")
     await panel.cb(f"acc:view:{account_id}")
     await panel.cb(f"acc:ai:{account_id}")
@@ -428,7 +442,13 @@ async def main() -> int:
     await panel.cb("set:lang")
     await panel.cb("set:lang:km")
     await panel.cb("set:backup")
-    await panel.msg("/addadmin 777000123 Admin SMOKE")
+    # ជំហានទី ២ — «Add Admin» ត្រូវលុប: អ្នកប្រើណា ចុច /start = ម្ចាស់ហាងខ្លួនឯងភ្លាម
+    # (feed() រាប់ error ឯង បើ /start គ្មានសារតប)
+    await panel.msg("/start", user_id=777000123)
+    mark = panel.mark()
+    await panel.msg("/addadmin 777000123 Admin SMOKE", unhandled_ok=True, expect_reply=False)
+    if not panel.says_not_since(mark, "បានបន័ែម Admin"):
+        panel.errors.append("✗ /addadmin នៅដំណើរការ")
     await panel.cb("menu:main")
     await panel.msg("/cancel")
 
@@ -492,26 +512,56 @@ async def main() -> int:
     async with db_session() as session:
         expect("IDOR prod:del លុបមិនបាន (owner នៅដដែល)", await crud.get_product(session, product_id) is not None)
 
+    # ជំហានទី ៥ — ប្រភេទជា per-tenant: staff = ម្ចាស់ហាងខ្លួន គ្រប់គ្រងបញ្ជីរបស់ខ្លួន
+    # ហាង STAFF កើតតាម add_admin (មិនមែន auto_register) ទើបยังគ្មានប្រភេទរបស់ខ្លួន
     mark = panel.mark()
     await panel.cb("menu:categories", user_id=STAFF)
-    expect("staff ឃើញប្រភេទដែលមានផលិតផលខ្លួន", panel.said_since(mark, "គណនីហ្គេម"))
-    expect("staff មិនឃើញប្រភេទទទេ (ខោអាវ)", panel.says_not_since(mark, "ខោអាវ"))
+    expect("staff មិនឃើញប្រភេទរបស់ Owner (per-tenant)", panel.says_not_since(mark, "គណនីហ្គេម"))
+    expect("staff ឃើញសារ «មិនទាន់មានប្រភេទ» សម្រាប់ហាងខ្លួន", panel.said_since(mark, "មិនទាន់មានប្រភេទ"))
 
     mark = panel.mark()
-    await panel.cb("cat:add", user_id=STAFF, unhandled_ok=True)
-    expect("staff បន័ែមប្រភេទមិនបាន", panel.said_since(mark, OWNER_ONLY_TEXT))
+    await panel.cb("cat:add", user_id=STAFF)
+    await panel.msg("staff_cat", user_id=STAFF)
+    await panel.msg("ប្រភេទ Staff", user_id=STAFF)
+    await panel.msg("-", user_id=STAFF)
+    await panel.msg("🧺", user_id=STAFF)
+    await panel.msg("STF", user_id=STAFF)
+    await panel.msg("-", user_id=STAFF)
     async with db_session() as session:
-        expect("cat:add មិនតັ້ FSM របស់ staff", await crud.get_category_by_code(session, "staff_try") is None)
+        staff_cat = await crud.get_category_by_code(session, "staff_cat", owner_admin_id=STAFF)
+        expect("staff បន័ែមប្រភេទរបស់ខ្លួនបាន (code ស្ទួន cross-tenant បាន)", staff_cat is not None)
+        expect("ប្រភេទ staff ភ្ជាប់ម្ចាស់ត្រូវ", staff_cat is not None and staff_cat.owner_admin_id == STAFF)
+        staff_cat_id = staff_cat.id if staff_cat else 0
+        stolen = await crud.get_category(session, staff_cat_id, owner_admin_id=OWNER)
+        expect("Owner ចុច ID ប្រភេទរបស់ staff → IDOR បដិសេធ", stolen is None)
+        cross = await crud.get_category_by_code(session, "smoke_cat", owner_admin_id=STAFF)
+        expect("staff search code របស់ Owner → រកមិនឃើញ", cross is None)
+
+    mark = panel.mark()
+    await panel.cb("menu:categories", user_id=OWNER)
+    expect("Owner មិនឃើញប្រភេទរបស់ staff", panel.says_not_since(mark, "ប្រភេទ Staff"))
 
     async with db_session() as session:
-        before = await crud.get_category(session, game_cat_id)
+        before = await crud.get_category(session, game_cat_id, owner_admin_id=OWNER)
         was_active = bool(before and before.is_active)
-    mark = panel.mark()
-    await panel.cb(f"cat:toggle:{game_cat_id}", user_id=STAFF, unhandled_ok=True)
-    expect("staff បិទ/បើកប្រភេទមិនបាន", panel.said_since(mark, OWNER_ONLY_TEXT))
+    await panel.cb(f"cat:toggle:{game_cat_id}", user_id=STAFF)
     async with db_session() as session:
-        after = await crud.get_category(session, game_cat_id)
-        expect("cat:toggle មិនប៉ះ is_active", bool(after and after.is_active) == was_active)
+        after = await crud.get_category(session, game_cat_id, owner_admin_id=OWNER)
+        expect("IDOR cat:toggle ប្រភេទ Owner → is_active មិនប្តូរ",
+               bool(after and after.is_active) == was_active)
+        held = await crud.get_category(session, staff_cat_id, owner_admin_id=STAFF)
+    await panel.cb(f"cat:toggle:{staff_cat_id}", user_id=STAFF)
+    async with db_session() as session:
+        flipped = await crud.get_category(session, staff_cat_id, owner_admin_id=STAFF)
+        expect("staff toggle ប្រភេទខ្លួន ប្តូរ is_active",
+               flipped is not None and held is not None and flipped.is_active != held.is_active)
+    await panel.cb(f"cat:askdel:{staff_cat_id}", user_id=STAFF)
+    await panel.cb(f"cat:del:{staff_cat_id}", user_id=STAFF)
+    async with db_session() as session:
+        expect("staff លុបប្រភេទរបស់ខ្លួនបាន",
+               await crud.get_category(session, staff_cat_id, owner_admin_id=STAFF) is None)
+        expect("លុបរបស់ staff → ប្រភេទ Owner នៅគ្រប់ ៨",
+               len(await crud.list_all_categories(session, OWNER)) == 8)
 
     for target, name in (("settings", "⚙️"), ("prompt", "🧠")):
         mark = panel.mark()
@@ -629,7 +679,7 @@ async def main() -> int:
     async with db_session() as session:
         ai_before = await crud.get_setting(session, "ai_enabled", "on")
     await panel.msg("/pauseall", user_id=STAFF)
-    expect("staff /pauseall មិនបាន", panel.said_since(mark, "គត់ Owner"))
+    expect("staff /pauseall ផ្អាកតែហាងខ្លួន (មិនមែន global)", panel.said_since(mark, "គណនីរបស់អ្នក"))
     async with db_session() as session:
         expect("staff /pauseall មិនប៉ះ ai_enabled global",
                (await crud.get_setting(session, "ai_enabled", "on")) == ai_before)
@@ -641,7 +691,8 @@ async def main() -> int:
     expect("staff /lowstock មិនបង្ហាញ stock owner", panel.says_not_since(mark, "Game Key SMOKE"))
     mark = panel.mark()
     await panel.cb(f"prod:view:{staff_product_id}", user_id=OWNER)
-    expect("Owner ឃើញផលិតផល staff", panel.said_since(mark, "Staff Key ONLY"))
+    expect("Owner មិនឃើញផលិតផល staff (IDOR ទិន្នន័យលម្អិត)",
+           panel.said_since(mark, "រកមិនឃើញផលិតផល") and panel.says_not_since(mark, "Staff Key ONLY"))
 
     print("— ចុះឈ្មោះគណនី — Session String (OTP login ត្រូវបានលុបចោល) —")
     import dataclasses
@@ -839,7 +890,7 @@ async def main() -> int:
     expect("IDOR បរាជ័យ → មិន reconcile ថ្មី", fake_manager.reconciled == reconciled_before)
     manager_module._manager = None
 
-    # ១១) Multi-user — Staff ម្នាក់ឃើញតែគណនីខ្លួន, Owner ឃើញទាំងអស់
+    # ១១) Multi-user — គ្រប់ tenant ឃើញតែគណនីខ្លួន រួមទាំង Owner (ទិន្នន័យលម្អិតមិន cross-tenant)
     STAFF2 = 777000457
     async with db_session() as session:
         await crud.add_admin(session, STAFF2, "Staff SMOKE 2")
@@ -849,7 +900,8 @@ async def main() -> int:
     expect("Staff ទី២ → /accounts មិនបង្ហាញគណនីរបស់ Staff ទី១", not panel.said_since(mark, MASKED_PHONE))
     mark = panel.mark()
     await panel.msg("/accounts", user_id=OWNER)
-    expect("Owner → /accounts ឃើញគណនីរបស់ Staff", panel.said_since(mark, MASKED_PHONE))
+    expect("Owner → /accounts មិនឃើញគណនីរបស់ Staff (IDOR/ទិន្នន័យលម្អិត)",
+           not panel.said_since(mark, MASKED_PHONE))
     expect("គ្រប់ path → លេខទូរស័ព្ទពេញលេញមិនដែលចេញក្នុង chat", panel.says_not_since(0, LOGIN_PHONE))
 
     expect("គ្រប់ flow → គ្មានសារ «កូដ OTP» សោះ", panel.says_not_since(0, "កូដ OTP"))
@@ -879,7 +931,7 @@ async def main() -> int:
         (remaining == 3 and sold == 1, f"Stock ត្រូវកាត់ ១ (សល់={remaining} លក់={sold})"),
         (order is not None and order.status == "delivered", f"Order → delivered ({order.status if order else '—'})"),
         (customer is not None and customer.total_orders == 1, "Customer រាប់ Order បាន ១"),
-        (staff, "/addadmin បន្ថែម staff ក្នុង DB"),
+        (staff, "អ្នកប្រើថ្មី /start → auto-register ក្នុង DB"),
     ]
     for ok, label in checks:
         if not ok:

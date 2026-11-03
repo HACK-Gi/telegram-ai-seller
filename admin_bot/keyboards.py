@@ -9,7 +9,7 @@ from collections.abc import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from database.models import Account, Admin, AccountStatus, Category, Customer, Order, OrderStatus, Product, QRCode
+from database.models import Account, AccountStatus, Category, Customer, Order, OrderStatus, Product, QRCode
 from helpers import esc, money
 
 
@@ -34,20 +34,21 @@ BUTTON_ROWS = 40  # Telegram កំណត់ ១០០ button ក្នុង ke
 
 
 def main_menu(is_owner: bool) -> InlineKeyboardMarkup:
-    """មេនុសំខាន់ — ដាក់ «គណនី + បន័ែមគណនី» ជាជួរលើកដំបូង ព្រោះវាជាចំណុចចាប់ផ្តើមលក់។
+    """មេនុរបស់ <b>ម្ចាស់ហាងម្នាក់ៗ</b> — រាល់ប៊ូតុង drive ទិន្នន័យក្នុង scope របស់គេតែប៉ុណ្ណោះ។
 
-    ប៊ូតុងទាំងអស់ប្រើ callback_data ចាស់ដដែល (`menu:*`, `acc:addsession`) ដូច្នេះ
-    handler ទាំងអស់នៅដំណើរការឥតប្តូរ។
+    «គណនី + បន័ែមគណនី» នៅជួរលើកដំបូង ព្រោះវាជាចំណុចចាប់ផ្តើមលក់។ ផ្នែក global
+    (System Prompt/ការកំណត់) លាក់សម្រាប់តែ Owner ដើម្បីឱ្យត្រូវ OwnerOnly filter។
+    ជំហានទី ៤ — «🔐 Admins» ត្រូវលុបចេញទាំងស្រុង ព្រោះគ្មានតួនាទីដែលត្រូវបន្ថែមដោយដៃទៀតទេ។
     """
     rows = [
         [("📱 គណនី Telegram", "menu:accounts"), ("➕ បន័ែមគណនី", "acc:addsession")],
         [("📦 ផលិតផល", "menu:products"), ("🏷 ប្រភេទអីវ៉ាន់", "menu:categories")],
-        [("💳 QR Code", "menu:qr"), ("🧠 System Prompt", "menu:prompt")],
-        [("🛒 Orders", "menu:orders"), ("👥 អតិថិជន", "menu:customers")],
-        [("📊 Analytics", "menu:analytics")],
+        [("💳 QR Code", "menu:qr"), ("🛒 Orders", "menu:orders")],
+        [("👥 អតិថិជន", "menu:customers"), ("📊 Analytics", "menu:analytics")],
     ]
     if is_owner:
-        rows.append([("⚙️ ការកំណត់", "menu:settings"), ("🔐 Admins", "menu:admins")])
+        rows.append([("🧠 System Prompt", "menu:prompt")])
+        rows.append([("⚙️ ការកំណត់", "menu:settings")])
     return build(rows)
 
 
@@ -342,21 +343,6 @@ def account_actions(account: Account, scope: "Scope | None" = None) -> InlineKey
     return build(rows)
 
 
-def owner_picker(account: Account, admins: Sequence[Admin]) -> InlineKeyboardMarkup:
-    """ជ្រើស admin ដែលត្រូវប្ដូរម្ចាស់គណនីឱ្យ (owner តែប៉ុណ្ណោះដែលឃើញបញ្ជីនេះ)។"""
-    rows = [
-        [
-            (
-                f"{esc(item.name or '—')} · <code>{item.telegram_id}</code>" + (" (បច្ចុប្បន្ន)" if item.telegram_id == account.owner_admin_id else ""),
-                f"acc:owner:{account.id}:{item.telegram_id}",
-            )
-        ]
-        for item in admins
-    ]
-    rows.append([("⬅️ ត្រឡប់", f"acc:view:{account.id}"), BACK_MAIN])
-    return build(rows)
-
-
 def analytics_menu() -> InlineKeyboardMarkup:
     return build(
         [
@@ -375,12 +361,5 @@ def settings_menu(is_owner: bool) -> InlineKeyboardMarkup:
     ]
     if is_owner:
         rows.append([("💾 Backup ឥឡូវ", "set:backup"), ("📥 Restore ពីឯកសារ", "set:restore")])
-    rows.append([BACK_MAIN])
-    return build(rows)
-
-
-def admins_menu(admins: Sequence[Admin]) -> InlineKeyboardMarkup:
-    rows = [[(f"👮 {esc(item.name or item.telegram_id)} · {esc(item.role)}", "noop:admin")] for item in admins]
-    rows.append([("➕ បន័ែម Admin", "adm:add"), ("🗑 លុប Admin", "adm:remove")])
     rows.append([BACK_MAIN])
     return build(rows)

@@ -16,6 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from admin_bot import keyboards, render
+from admin_bot.access import MAX_SESSION_ADDS_PER_HOUR, action_allowed
 from admin_bot.owner_gate import OwnerOnly
 from admin_bot.scope import Scope
 from config import settings
@@ -80,6 +81,11 @@ class LoginStates(StatesGroup):
     waiting_session = State()
 
 
+class TransferOwner(StatesGroup):
+    """Owner វាយ Telegram ID ផ្ទាល់ខ្លួន ជំនួសបញ្ជីបង្ហាញគ្រប់ Tenant (ជំហានទី ៤)។"""
+    target = State()
+
+
 def target_id(callback: CallbackQuery) -> int:
     return int(callback.data.rsplit(":", 1)[-1])
 
@@ -137,12 +143,10 @@ async def show_list(event: CallbackQuery | Message, scope: Scope) -> None:
         accounts = await crud.list_accounts(session, owner_admin_id=scope.owner_id)
     if not accounts:
         header = (
-            "📱 <b>គណនី Telegram</b>\n\n"
+            "📱 <b>គណនី Telegram របស់ហាងអ្នក</b>\n\n"
             "🗂 <i>មិនទាន់មានគណនី — ចុច ➕ បន័ែមគណនី (Session String) ឬវាយ <code>/addsession</code></i>\n"
-            "💡 បន្ថែមបានគ្មានកំណត់ រាល់គណនីមាន AI + outbox ផ្ទាល់ខ្លួន"
-            if scope.is_owner
-            else "📱 <b>គណនី Telegram</b>\n\n"
-            "🗂 <i>មិនទាន់មានគណនីក្នុងវិសាលភាពរបស់អ្នក — login គណនីរបស់អ្នក ឬសុំ Owner ប្ដូរម្ចាស់គណនី</i>"
+            "💡 បន្ថែមបានគ្មានកំណត់ រាល់គណនីមាន AI + outbox ផ្ទាល់ខ្លួន\n"
+            "🔒 គណនីរបស់អ្នក មិនបង្ហាញលើហាងផ្សេងទេ"
         )
     else:
         counts: dict[str, int] = {}
@@ -268,6 +272,12 @@ async def cmd_add_account(message: Message, command: CommandObject, state: FSMCo
 @router.message(Command("addsession"))
 async def cmd_add_session(message: Message, state: FSMContext, scope: Scope) -> None:
     """បន័ែមគណនីតាម Session String — គេចពី OTP Block ពី Telegram។"""
+    if not action_allowed(scope.admin_id):
+        await message.answer(
+            f"⏳ បានដល់កម្រិតបន្ថែមគណនី {MAX_SESSION_ADDS_PER_HOUR} ក្នុងមួយម៉ោងសម្រាប់អ្នកម្នាក់\n"
+            "<i>សូមរង់ចាំបន្តិច រួចវាយ <code>/addsession</code> ម្តងទៀត</i>"
+        )
+        return
     await state.set_state(LoginStates.waiting_session)
     await message.answer(
         "🔐 <b>បន្ថែមគណនីតាម Session String</b>\n\n"
@@ -541,35 +551,61 @@ async def cb_enable(callback: CallbackQuery, scope: Scope) -> None:
 
 
 @router.callback_query(F.data.startswith("acc:askowner:"), OwnerOnly())
-async def cb_ask_owner(callback: CallbackQuery, scope: Scope) -> None:
+async def cb_ask_owner(callback: CallbackQuery, state: FSMContext, scope: Scope) -> None:
+    """សួរ Telegram ID ដោយផ្ទាល់ — មិនបញ្ជីឈ្មោះគ្រប់ Tenant ឱ្យ Owner ឃើញទៀតទេ (ជំហានទី ៤)។"""
     account_id = target_id(callback)
     account = await guard_account(callback, account_id, scope)
     if account is None or callback.message is None:
         return
-    async with db_session() as session:
-        admins = await crud.list_admins(session)
+    await state.set_state(TransferOwner.target)
+    await state.update_data(transfer_account=account_id)
     await render.safe_edit(
         callback.message,
         f"🔀 <b>ប្ដូរម្ចាស់គណនី</b> <code>#{account_id}</code> · {esc(account.display_label())}\n\n"
-        "<i>ទិន្នន័យដែល derive ពីគណនីនេះ (ផលិតផល/QR ដែលភ្ជាប់) នឹងតាមម្ចាស់ថ្មីទៅដោយ។</i>",
-        keyboards.owner_picker(account, admins),
+        "ផ្ញើ <b>Telegram ID</b> របស់ម្ចាស់ហាងថ្មី (គត់រូបដែលបាន <code>/start</code> ម្តងហើយ)។\n"
+        "<i>ទិន្នន័យដែល derive ពីគណនីនេះ (ផលិតផល/QR ដែលភ្ជាប់) នឹងតាមម្ចាស់ថ្មីទៅដោយ។</i>\n"
+        "ចុច /cancel ដើម្បីបោះបង់",
+        keyboards.build([[("⬅️ ត្រឡប់", f"acc:view:{account_id}"), keyboards.BACK_MAIN]]),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("acc:owner:"), OwnerOnly())
-async def cb_transfer_owner(callback: CallbackQuery, scope: Scope) -> None:
-    parts = callback.data.split(":")
-    account_id, new_owner = int(parts[2]), int(parts[3])
-    if await guard_account(callback, account_id, scope) is None:
+@router.message(TransferOwner.target, F.text, OwnerOnly())
+async def md_transfer_owner(message: Message, state: FSMContext, scope: Scope) -> None:
+    data = await state.get_data()
+    account_id = data.get("transfer_account")
+    if not account_id:
+        await state.set_state(None)
+        await message.answer("រំលងអស់ពេល — សូមចាប់ផ្តើមម្តងទៀត")
+        return
+    try:
+        new_owner = int(message.text.split()[0])
+    except (ValueError, IndexError):
+        await message.answer("⛔ ត្រូវជាលេខ Telegram ID:")
         return
     async with db_session() as session:
+        target_admin = await crud.get_admin(session, new_owner)
+        if target_admin is None or not target_admin.is_active:
+            await message.answer(
+                f"⛔ <code>{new_owner}</code> មិនមែនជាម្ចាស់ហាងដែលបើកសកម្មទេ — "
+                "គេត្រូវចុច <code>/start</code> លើ Bot នេះមុនសិន"
+            )
+            return
+        account = await crud.get_account(session, account_id, owner_admin_id=scope.owner_id)
+        if account is None:
+            log.warning("IDOR: user=%s account=%s ក្រៅវិសាលភាព (transfer)", scope.admin_id, account_id)
+            await state.set_state(None)
+            await message.answer(NOT_FOUND)
+            return
         moved = await crud.transfer_account_owner(session, account_id, new_owner)
+    await state.set_state(None)
     if not moved:
-        await callback.answer("🚫 ប្ដូរម្ចាស់មិនបាន (រកមិនឃើញ admin ឬគណនី)", show_alert=True)
+        await message.answer("🚫 ប្ដូរម្ចាស់មិនបាន (រកមិនឃើញគណនី)")
         return
-    await callback.answer("🔀 បានប្ដូរម្ចាស់គណនី")
-    await show_list(callback, scope)
+    await message.answer(
+        f"🔀 បានប្ដូរម្ចាស់គណនី <code>#{account_id}</code> → <code>{new_owner}</code>",
+        reply_markup=keyboards.main_menu(scope.is_owner),
+    )
 
 
 @router.callback_query(F.data.startswith("acc:askdel:"))

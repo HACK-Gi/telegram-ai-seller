@@ -60,6 +60,9 @@ from userbot.outbox import PRIORITY_DELIVERY, Outbox, OutboxItem, PeerRef  # noq
 from userbot.seller import Seller  # noqa: E402
 from userbot.session_store import SessionCryptoError  # noqa: E402
 
+# ជំហានទី ៥ — រាល់ គណនី/ប្រភេទ/ផលិតផល/QR ក្នុងតេស្តនេះ ជាของហាងតែមួយ (per-tenant)
+SHOP = settings.owner_id
+
 # ---------- រាប់ ----------
 TOTAL = 0
 PASSED = 0
@@ -174,7 +177,9 @@ def real_session(seed: int) -> str:
 async def make_account(phone: str, *, ai_enabled: bool = True, working_hours: str | None = None) -> Account:
     token = session_store.encrypt(fake_session(phone))
     async with db_session() as session:
-        account = await crud.create_account(session, phone=phone, session_encrypted=token, name=phone)
+        account = await crud.create_account(
+            session, phone=phone, session_encrypted=token, name=phone, owner_admin_id=SHOP
+        )
         account.enabled = True
         account.ai_enabled = ai_enabled
         account.working_hours = working_hours
@@ -287,7 +292,8 @@ async def test_api_credentials() -> None:
     phone = "+85517000123"
     async with db_session() as session:
         account = await crud.create_account(
-            session, phone=phone, session_encrypted=session_store.encrypt(real_session(1)), name="Smoke Session"
+            session, phone=phone, session_encrypted=session_store.encrypt(real_session(1)),
+            name="Smoke Session", owner_admin_id=SHOP
         )
         account_id = account.id
     async with db_session() as session:
@@ -646,6 +652,8 @@ async def test_controls() -> None:
     cust = 840000001
     async with db_session() as session:
         await crud.get_or_create_customer(session, cust)
+        # អតិថិជនត្រូវភ្ជាប់គណនី ទើបស្ថិតក្នុងវិសាលភាពរបស់ម្ចាស់គណនី #1 (Controls)
+        await crud.set_customer_account(session, cust, 1)
 
     ev = FakeEvent(settings.owner_id, f"/pause {cust}")
     await controls.on_command(ev)
@@ -744,8 +752,8 @@ async def test_controls() -> None:
 
     ev = FakeEvent(settings.owner_id, "/status")
     await controls.on_command(ev)
-    check("Owner /status ឃើញគណនីទាំងអស់",
-          ev.replies and f"គណនី #{staff_account_id}" in ev.replies[0] and "ជួររង់ចាំ 2" in ev.replies[0])
+    check("Owner /status ឃើញតែគណនីខ្លួន (មិនបង្ហាញគណនី staff)",
+          ev.replies and f"គណនី #{staff_account_id}" not in ev.replies[0] and "ជួររង់ចាំ 2" in ev.replies[0])
 
     ev = FakeEvent(settings.owner_id, "/stopbot")
     await controls.on_command(ev)
@@ -815,7 +823,7 @@ async def test_catalog_flow() -> None:
     account = await make_account("+85511100013")
     async with db_session() as session:
         category, err = await crud.create_category(
-            session, code="smkt", prefix="SMKT", name_kh="ហ្គេមសាកល្បង", icon="🎮"
+            session, owner_admin_id=SHOP, code="smkt", prefix="SMKT", name_kh="ហ្គេមសាកល្បង", icon="🎮"
         )
         check("create_category រួច (code ថ្មី)", err == "" and category is not None)
         product = await crud.create_product(
@@ -825,6 +833,7 @@ async def test_catalog_flow() -> None:
             description="មុខសាកល្បង",
             category=category.name_kh,
             category_id=category.id,
+            owner_admin_id=SHOP,
         )
         check("product_code ស្វ័យប្រវត្តិ SMKT-001", product.product_code == "SMKT-001")
         codes = await crud.add_stock_lines(session, product.id, ["ff-a@mail.com|p1", "ff-b@mail.com|p2"])
@@ -943,19 +952,21 @@ async def test_text_buy_qr() -> None:
     account = await make_account("+85511100014")
     async with db_session() as session:
         category, err = await crud.create_category(
-            session, code="qrp", prefix="QRP", name_kh="ទូទាត់សាកល្បង", icon="💳"
+            session, owner_admin_id=SHOP, code="qrp", prefix="QRP", name_kh="ទូទាត់សាកល្បង", icon="💳"
         )
         product = await crud.create_product(
-            session, name="Quick Pass Test", price=6.0, category=category.name_kh, category_id=category.id
+            session, name="Quick Pass Test", price=6.0, category=category.name_kh, category_id=category.id,
+            owner_admin_id=SHOP,
         )
         other = await crud.create_product(
-            session, name="PUBGM Test", price=9.0, category=category.name_kh, category_id=category.id
+            session, name="PUBGM Test", price=9.0, category=category.name_kh, category_id=category.id,
+            owner_admin_id=SHOP,
         )
         await crud.add_stock_lines(session, product.id, ["qp-1|a", "qp-2|b", "qp-3|c"])
         await crud.add_stock_lines(session, other.id, ["pubg-1|a"])
         await crud.create_qrcode(
             session, name="ABA smoke", provider="aba", account_info="012345678 ABA",
-            image_path=str(qr_image), is_default=True,
+            image_path=str(qr_image), is_default=True, owner_admin_id=SHOP,
         )
         pid, other_id = product.id, other.id
     check("create_category សម្រាប់ផ្លូវ QR", err == "")
@@ -1048,24 +1059,25 @@ async def test_qr_account_ladder() -> None:
     seller_b = await make_account("+85511100016")
     async with db_session() as session:
         category, err = await crud.create_category(
-            session, code="qrlad", prefix="QRL", name_kh="ជណ្តើរ QR", icon="💳"
+            session, owner_admin_id=SHOP, code="qrlad", prefix="QRL", name_kh="ជណ្តើរ QR", icon="💳"
         )
         product = await crud.create_product(
-            session, name="Ladder Pass", price=5.0, category=category.name_kh, category_id=category.id
+            session, name="Ladder Pass", price=5.0, category=category.name_kh, category_id=category.id,
+            owner_admin_id=SHOP,
         )
         await crud.add_stock_lines(session, product.id, ["lad-1|a", "lad-2|b", "lad-3|c"])
         # ៣ ជាន់៖ ភ្ជាប់គណនី A → ភ្ជាប់ផលិតផល (គ្មានគណនី) → default ម្ចាស់ (គ្មានគណនី)
         await crud.create_qrcode(
             session, name="Owner default", provider="aba", account_info="000000 ABA",
-            image_path=str(owner_img), is_default=True,
+            image_path=str(owner_img), is_default=True, owner_admin_id=SHOP,
         )
         await crud.create_qrcode(
             session, name="QR A", provider="aba", account_info="111111 ABA",
-            image_path=str(acct_img), account_id=seller_a.id,
+            image_path=str(acct_img), account_id=seller_a.id, owner_admin_id=SHOP,
         )
         await crud.create_qrcode(
             session, name="QR product", provider="aba", account_info="222222 ABA",
-            image_path=str(prod_img), product_id=product.id,
+            image_path=str(prod_img), product_id=product.id, owner_admin_id=SHOP,
         )
         pid = product.id
     check("create_category សម្រាប់ជណ្តើរ QR", err == "")
@@ -1118,7 +1130,7 @@ async def test_qr_never_cross_owner() -> None:
         lonely = await crud.create_account(session, phone="+85511100017", session_encrypted=token,
                                            name="No QR shop", owner_admin_id=shop_owner)
         category, _err = await crud.create_category(
-            session, code="xown", prefix="XOWN", name_kh="ឆ្លងម្ចាស់", icon="💳"
+            session, owner_admin_id=shop_owner, code="xown", prefix="XOWN", name_kh="ឆ្លងម្ចាស់", icon="💳"
         )
         product = await crud.create_product(
             session, name="Lonely Pass", price=3.0, category=category.name_kh,

@@ -38,11 +38,11 @@ from cryptography.fernet import Fernet  # noqa: E402
 
 os.environ["SESSION_FERNET_KEY"] = Fernet.generate_key().decode()
 
-from sqlalchemy import delete  # noqa: E402
+from sqlalchemy import delete, select  # noqa: E402
 
 import database.crud as crud  # noqa: E402
 from database import migrations, session as dbsession  # noqa: E402
-from database.models import Account, OrderStatus, QRCode  # noqa: E402
+from database.models import Account, Category, OrderStatus, QRCode  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -59,6 +59,16 @@ def check(name: str, cond: bool) -> None:
     else:
         FAIL += 1
         print(f"  ❌ {name}")
+
+
+async def shop_owner(s) -> int | None:
+    """ម្ចាស់ដែល migration ត្រង់ទិន្នន័យចាស់ទាំងអស់ឱ្យ (ជួរប្រភេទដំបូង)។
+
+    ជំហានទី ៥ — ប្រភេទជា per-tenant ហើយ ដូច្នេះគ្រប់ read-path ក្នុងតេស្តត្រូវ ID នេះ។
+    """
+    return await s.scalar(
+        select(Category.owner_admin_id).where(Category.owner_admin_id.is_not(None)).order_by(Category.id).limit(1)
+    )
 
 
 async def main() -> int:
@@ -96,8 +106,10 @@ async def main() -> int:
     check(f"schema version = {migrations.SCHEMA_VERSION}",
           (await migrations.schema_version()) == migrations.SCHEMA_VERSION)
     async with dbsession.SessionFactory() as s:
-        seeded_now = await crud.list_all_categories(s)
-    check("categories មាន ៨ (seed ឬស្រាប់ពី DB ពិត)", len(seeded_now) == 8)
+        owner = await shop_owner(s)
+        check("migration ត្រង់ម្ចាស់បាន (OWNER_ID ឬ admins role=owner)", owner is not None)
+        seeded_now = await crud.list_all_categories(s, owner) if owner is not None else []
+    check("categories មាន ៨ ក្នុងហាងរបស់ម្ចាស់ (seed ឬស្រាប់ពី DB ពិត)", len(seeded_now) == 8)
     check("prompts ត្រូវ refresh", any("default prompts refreshed" in n for n in notes))
     async with dbsession.SessionFactory() as s:
         sp = await crud.get_setting(s, "system_prompt")
@@ -200,22 +212,29 @@ async def main() -> int:
         await s.execute(delete(Account).where(Account.id == cred_acct_id))
         await s.commit()
 
-    print("\n[2] Categories + backfill លើទិន្នន័យពិត (ច្បាប់)")
+    print("\n[2] Categories + backfill លើទិន្នន័យពិត (ច្បាប់ per-tenant)")
     async with dbsession.SessionFactory() as s:
-        cats = await crud.list_all_categories(s)
+        cats = await crud.list_all_categories(s, owner)
         codes = [c.code for c in cats]
-        check("មាន ៨ categories", len(cats) == 8 and "game_acc" in codes and "gen" in codes)
+        check("មាន ៨ categories ក្នុងហាងម្ចាស់", len(cats) == 8 and "game_acc" in codes and "gen" in codes)
+        intruder = await crud.list_all_categories(s, owner + 999_999)
+        check("Tenant ផ្សេង → មិនឃើញប្រភេទរបស់ម្ចាស់សោះ", intruder == [])
         p1 = await crud.get_product(s, 1)
         if p1 is not None:
-            game_cat = await crud.get_category_by_code(s, "game_acc")
+            game_cat = await crud.get_category_by_code(s, "game_acc", owner_admin_id=owner)
             check("backfill product #1 → GAME-*", str(p1.product_code or "").startswith("GAME-"))
-            check("backfill category_id → game_acc", p1.category_id == game_cat.id)
+            check("backfill category_id → game_acc របស់ម្ចាស់", game_cat is not None and p1.category_id == game_cat.id)
             check("stock collection អានបាន (no MissingGreenlet)", p1.remaining >= 0)
 
     print("\n[3] Product code + stock lines + reservation/oversell")
     async with dbsession.SessionFactory() as s:
-        cat = await crud.get_category_by_code(s, "ai_pro")
-        p = await crud.create_product(s, name="Test AIPRO", price=10.0, category_id=cat.id)
+        cat = await crud.get_category_by_code(s, "ai_pro", owner_admin_id=owner)
+        if cat is None:
+            check("រកឃើញប្រភេទ ai_pro ក្នុងហាងម្ចាស់ (មុន run [3])", False)
+            return 1
+        p = await crud.create_product(
+            s, name="Test AIPRO", price=10.0, category_id=cat.id, owner_admin_id=owner
+        )
         await s.commit()
         check("code ស្វ័យប្រវត្តិ AIPRO-*", str(p.product_code or "").startswith("AIPRO-"))
         check("category ត្រូវ mirror ពី name_kh", p.category == cat.name_kh)

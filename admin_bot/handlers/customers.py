@@ -72,9 +72,11 @@ async def show_list(event: Message | CallbackQuery, state: FSMContext, scope: Sc
         f"\n🔍 <code>{esc(search)}</code>" if search else ""
     )
     if not customers:
-        header += "\n\n<i>មិនមានអតិថិជនទេ (Userbot នឹងបង្កើតពួកគេពេលមានសារចូល)</i>"
-        if scope.ids is not None and not scope.ids:
-            header += "\n⚠️ <i>វិសាលភាពរបស់អ្នកទំនេរ — មិនទាន់មានគណនីភ្ជាប់នឹងអ្នកទេ សុំ Owner ជួយកំណត់</i>"
+        header += "\n\n<i>មិនមានអតិថិជនទេ</i>"
+        if not scope.ids:
+            header += "\n⚠️ <i>មិនទាន់មានគណនីរបស់អ្នក — ចុច ➕ បន័ែមគណនី ឬវាយ <code>/addsession</code>។ Userbot នឹងបង្កើតអតិថិជនពេលមានសារចូល</i>"
+        else:
+            header += "\n<i>អតិថិជននឹងចូលបញ្ជីនេះពេលមានសារមកគណនីរបស់អ្នក</i>"
 
     markup = keyboards.customers_menu(customers, current_page, pages)
     if isinstance(event, CallbackQuery):
@@ -341,8 +343,7 @@ async def _command_flag(message: Message, command: CommandObject, scope: Scope, 
     async with db_session() as session:
         customer = await crud.get_customer_by_telegram(session, telegram_id, account_ids=scope.ids)
         if customer is None:
-            if not scope.is_owner:
-                log.warning("IDOR: user=%s cust=%s", scope.admin_id, telegram_id)
+            log.warning("IDOR: user=%s cust=%s", scope.admin_id, telegram_id)
             await message.answer(
                 f"⛔ រកមិនឃើញអតិថិជន <code>{telegram_id}</code>\n"
                 "<i>គេមិនធ្លាប់ផ្ញើសារមក ឬមិនមែនអតិថិជនរបស់គណនីអ្នក (Userbot បង្កើត Record ពេលមានសារចូល)។</i>"
@@ -354,14 +355,26 @@ async def _command_flag(message: Message, command: CommandObject, scope: Scope, 
     await message.answer(f"{ok} — <code>{telegram_id}</code>\n\n{card}", reply_markup=markup)
 
 
+async def _tenant_pause_all(message: Message, scope: Scope, *, paused: bool) -> None:
+    """ម្ចាស់ហាងបិទ/បើក AI តែក្នុងគណនីរបស់ខ្លួន — មិនប៉ះ `ai_enabled` global ទេ។"""
+    if not scope.has_accounts:
+        await message.answer(
+            "⛔ អ្នកមិនទាន់មានគណនីរបស់ខ្លួនទេ — ចុច ➕ បន័ែមគណនី ឬវាយ <code>/addsession</code>"
+        )
+        return
+    async with db_session() as session:
+        changed = await crud.pause_all_customers(session, paused=paused, account_ids=scope.ids)
+    verb = "ផ្អាក" if paused else "បន្ត"
+    await message.answer(
+        f"⏯ <b>{verb} AI</b> អតិថិជន {changed} រូប ក្នុង {len(scope.ids)} គណនីរបស់អ្នក\n"
+        "<i>ហាងផ្សេង មិនត្រូវបានប៉ះទេ</i>"
+    )
+
+
 @router.message(Command("pauseall"))
 async def cmd_pause_all(message: Message, scope: Scope) -> None:
     if not scope.is_owner:
-        log.warning("បដិសេធ /pauseall ពី user %s (staff មិនមែន Owner)", scope.admin_id)
-        await message.answer(
-            f"⛔ {OWNER_ONLY}\n<i>បញ្ជានេះបិទ AI របស់អតិថិជនទាំងអស់គ្នា មិនមែនតែអ្នកទេ។</i>\n"
-            "សម្រាប់អតិថិជនម្នាក់ៗ សូមប្រើ <code>/pause &lt;telegram_id&gt;</code> ជំនួស។"
-        )
+        await _tenant_pause_all(message, scope, paused=True)
         return
     async with db_session() as session:
         await crud.set_setting(session, "ai_enabled", "off")
@@ -373,11 +386,7 @@ async def cmd_pause_all(message: Message, scope: Scope) -> None:
 @router.message(Command("resumeall"))
 async def cmd_resume_all(message: Message, scope: Scope) -> None:
     if not scope.is_owner:
-        log.warning("បដិសេធ /resumeall ពី user %s (staff មិនមែន Owner)", scope.admin_id)
-        await message.answer(
-            f"⛔ {OWNER_ONLY}\n<i>បញ្ជានេះបើក AI របស់អតិថិជនទាំងអស់គ្នា មិនមែនតែអ្នកទេ។</i>\n"
-            "សម្រាប់អតិថិជនម្នាក់ៗ សូមប្រើ <code>/resume &lt;telegram_id&gt;</code> ជំនួស។"
-        )
+        await _tenant_pause_all(message, scope, paused=False)
         return
     async with db_session() as session:
         await crud.set_setting(session, "ai_enabled", "on")

@@ -23,7 +23,7 @@ HELP = (
     "🎮 បញ្ជាដែលដំណើរការលើគណនីនេះ៖\n"
     "/pause <customer_id> — ផ្អាក AI សម្រាប់អតិថិជនម្នាក់\n"
     "/resume <customer_id> — បន្ត AI\n"
-    "/pauseall — ផ្អាក AI គ្រប់គណនី (Owner) ឬតែគណនីរបស់អ្នក (Staff)\n"
+    "/pauseall — ផ្អាក AI គណនីរបស់អ្នកប៉ុណ្ណោះ\n"
     "/resumeall — បើក AI ឡើងវិញ (ដែនកំណត់ដូច /pauseall)\n"
     "/stopbot — ផ្តាច់គណនីទាំងអស់ (Owner តែប៉ុណ្ណោះ)\n"
     "/startbot — ភ្ជាប់ឡើងវិញ (Owner តែប៉ុណ្ណោះ)\n"
@@ -32,13 +32,20 @@ HELP = (
 OWNER_ONLY = "⛔ បញ្ជានេះសម្រាប់តែ Owner គត់"
 
 
-async def scope_for(user_id: int) -> Scope:
-    """វិសាលភាពតាម `admin_bot/access.py` ដូចគ្នា — Owner គ្មានដែនកំណត់, staff តាមគណនីរបស់គេ។"""
-    if user_id == settings.owner_id:
-        return Scope(admin_id=user_id, is_owner=True, account_ids=None)
+async def may_control(user_id: int) -> bool:
+    """Owner, admin ក្នុង .env ឬ ម្ចាស់ហាងដែលចុះឈ្មោះរួច (= auto-register) ប៉ុណ្ណោះ។"""
+    if user_id == settings.owner_id or user_id in settings.admin_ids:
+        return True
     async with db_session() as session:
-        account_ids = await crud.owned_account_ids(session, user_id)
-    return Scope(admin_id=user_id, is_owner=False, account_ids=account_ids)
+        admin = await crud.get_admin(session, user_id)
+    return admin is not None and admin.is_active
+
+
+async def scope_for(user_id: int) -> Scope:
+    """វិសាលភាពដូច `admin_bot/access.py` — គ្រប់ម្ចាស់ហាង តាមគណនីរបស់ខ្លួនឯងតែប៉ុណ្ណោះ។"""
+    from admin_bot.access import tenant_scope
+
+    return await tenant_scope(user_id, is_owner=user_id == settings.owner_id)
 
 
 class Controls:
@@ -52,13 +59,13 @@ class Controls:
         if not event.is_private or event.sender_id is None:
             return
         user_id = event.sender_id
-        if user_id != settings.owner_id and user_id not in settings.admin_ids:
-            return  # មិនមែន staff — ទុកឱ្យ Seller
-        if user_id == settings.owner_id:
-            await self._record_owner_identity(event)
         text = (event.text or "").strip()
         if not text.startswith("/"):
+            return  # សារធម្មតាពីអតិថិជន — ទុកឱ្យ Seller ឆ្លើយ (មិន query DB)
+        if not await may_control(user_id):
             return
+        if user_id == settings.owner_id:
+            await self._record_owner_identity(event)
 
         parts = text.split()
         command = parts[0].lower().split("@", 1)[0]  # /pause@somebot → /pause
@@ -105,13 +112,15 @@ class Controls:
             await event.respond(f"🤖 AI ទាំងអស់ ត្រូវបាន{verb}{note}{extra}")
             return
         if not scope.has_accounts:
-            await event.respond("⛔ អ្នកមិនទាន់មានគណនីក្នុងវិសាលភាព — សុំ Owner ប្រគល់គណនី ឬប្រើ /addaccount")
+            await event.respond(
+                "⛔ អ្នកមិនទាន់មានគណនីរបស់ខ្លួនទេ — បើក Panel ចុច ➕ បន័ែមគណនី ឬវាយ <code>/addsession</code>"
+            )
             return
         async with db_session() as session:
             changed = await crud.pause_all_customers(session, paused=not enabled, account_ids=scope.ids)
         await event.respond(
             f"⏯ {verb} AI អតិថិជន {changed} រូប ក្នុងគណនីរបស់អ្នក "
-            f"({len(scope.account_ids or ())} គណនី)\nគណនីអ្នកផ្សេង មិនត្រូវបានប៉ះទេ"
+            f"({len(scope.ids)} គណនី)\nគណនីអ្នកផ្សេង មិនត្រូវបានប៉ះទេ"
         )
 
     async def _record_owner_identity(self, event) -> None:
@@ -146,12 +155,12 @@ class Controls:
 
     def _status_text(self, scope: Scope) -> str:
         info = self.manager.status()
-        queues = info["queues"]
-        if not scope.is_owner:
-            allowed = set(scope.ids)
-            queues = {account_id: depth for account_id, depth in queues.items() if account_id in allowed}
-        seen = len(info["running_accounts"]) if scope.is_owner else len(queues)
-        lines = [f"📊 {scope.label()} · គណនីភ្ជាប់៖ {seen} · global {'បិទ' if info['global_stopped'] else 'បើក'}"]
+        allowed = set(scope.ids)  # គ្រប់ម្ចាស់ហាង រួមទាំង Owner ឃើញតែគណនីរបស់ខ្លួន
+        queues = {account_id: depth for account_id, depth in info["queues"].items() if account_id in allowed}
+        lines = [
+            f"📊 {scope.label()} · គណនីរបស់អ្នកកំពុងរត់៖ {len(queues)} · "
+            f"{'AI global បិទ' if info['global_stopped'] else 'AI global បើក'}"
+        ]
         for account_id, depth in sorted(queues.items()):
             lines.append(f" · គណនី #{account_id} — ជួររង់ចាំ {depth}")
         return "\n".join(lines)

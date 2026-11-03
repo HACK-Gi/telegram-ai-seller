@@ -121,11 +121,23 @@ class Catalog:
     async def _visible_products(self, session) -> list:
         return await crud.products_for_account(session, self.account_id)
 
+    async def _shop_owner(self, session) -> int | None:
+        """ម្ចាស់ហាងរបស់គណនីនេះ — គត់បញ្ជីប្រភេទរបស់គេ (ជំហានទី ៥ per-tenant)។
+
+        គ្មានគណនី ឬគណនីគ្មានម្ចាស់ → None ហើយអ្នកទិញមិនឃើញប្រភេទរបស់ ai ទេ
+        (fail-closed ល្អជាងបង្ហាញ «គណនីហ្គេម» របស់ហាងផ្សេងដែលមាន code ដូចគ្នា)។
+        """
+        account = await crud.get_account(session, self.account_id)
+        return account.owner_admin_id if account is not None else None
+
     # ---------- សម្ភារៈ (text + rows) ----------
     async def categories_text(self) -> tuple[str, list[list[tuple[str, str]]]]:
         async with db_session() as session:
             products = await self._visible_products(session)
-            categories = await crud.list_all_categories(session, active_only=True)
+            owner_id = await self._shop_owner(session)
+            categories = (
+                await crud.list_all_categories(session, owner_id, active_only=True) if owner_id is not None else []
+            )
         in_scope: dict[int, int] = {}
         for product in products:
             if product.category_id is not None:
@@ -150,7 +162,12 @@ class Catalog:
     async def category_products_text(self, category_id: int) -> tuple[str, list[list[tuple[str, str]]]]:
         async with db_session() as session:
             products = await self._visible_products(session)
-            category = await crud.get_category(session, category_id) if category_id else None
+            owner_id = await self._shop_owner(session)
+            category = (
+                await crud.get_category(session, category_id, owner_admin_id=owner_id)
+                if category_id and owner_id is not None
+                else None
+            )
         if category_id and category is None:
             return "⚠️ ប្រភេទនេះលែងមានទេបង — សូមជ្រើសរើសថ្មី", [[("📦 ប្រភេទទាំងអស់", "ub:cats")]]
         if category is not None:

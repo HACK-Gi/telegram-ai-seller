@@ -95,9 +95,7 @@ async def show_list(
     if category:
         header += f"\n🏷 <code>{esc(category)}</code>"
     if not products:
-        header += "\n\n<i>មិនមានផលិតផលទេ — ចុច ➕ បន័ែមថ្មី</i>"
-        if not scope.is_owner:
-            header += "\n⚠️ <i>អ្នកឃើញតែផលិតផលដែលអ្នកបង្កើត — សូម ➕ បន័ែមថ្មី</i>"
+        header += "\n\n<i>មិនមានផលិតផលទេ</i>\n<i>ហាងរបស់អ្នកទទេ — ចុច ➕ បន័ែមថ្មី ដើម្បីចាប់ផ្តើមលក់</i>"
 
     markup = keyboards.products_menu(products, current_page, pages)
     if isinstance(event, CallbackQuery):
@@ -158,9 +156,9 @@ async def cb_product_view(callback: CallbackQuery, scope: Scope) -> None:
 
 
 @router.callback_query(F.data == "prod:categories")
-async def cb_categories(callback: CallbackQuery) -> None:
+async def cb_categories(callback: CallbackQuery, scope: Scope) -> None:
     async with db_session() as session:
-        categories = await crud.list_all_categories(session)
+        categories = await crud.list_all_categories(session, scope.owner_id)
     if not categories:
         await callback.answer("មិនមានប្រភេទនៅឡើយ", show_alert=True)
         return
@@ -180,7 +178,7 @@ async def cb_filter(callback: CallbackQuery, state: FSMContext, scope: Scope) ->
     if raw.isdigit():
         category_id = int(raw)
         async with db_session() as session:
-            category = await crud.get_category(session, category_id)
+            category = await crud.get_category(session, category_id, owner_admin_id=scope.owner_id)
         label = category.name_kh if category else ""
         await state.update_data(prod_category_id=category_id, prod_category="", prod_page=1)
     else:

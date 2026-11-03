@@ -1,17 +1,23 @@
-"""⚙️ ការកំណត់ និង 🔐 Admins — គត់ Owner ប៉ុណ្ណោះដែលកែបាន (Admin ជំនួយមើលបានតែប៉ុណ្ណោះ)។"""
+"""⚙️ System Settings — គត់ Owner ប៉ុណ្ណោះដែលកែបាន (គ្មានផ្នែក Admins ទៀតទេ)។
+
+ជំហានទី ៤/៥ — «Add Admin» ត្រូវលុបចេញទាំងស្រុង: គ្រប់អ្នកប្រើ Telegram ក្លាយជាម្ចាស់ហាង
+របស់ខ្លួនឯងតាម auto-register ទើបគ្មានតួនាទី «Admin ជំនួយ» ដែលត្រូវបន្ថែមដោយដៃទៀតទេ។
+លេខក្នុង overview ខាងក្រោម scope តែទិន្នន័យរបស់ Owner ខ្លួនឯង លើកលែងតែចំនួនសរុប
+របស់ប្រព័ន្ធ (ចំនួនហាង, ចំនួន Order សរុប) ដែលជា aggregate គ្មានឈ្មោះ/លេខទូរស័ព្ទណា។
+"""
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from admin_bot import keyboards
 from admin_bot.owner_gate import OwnerOnly
+from admin_bot.scope import Scope
 from ai_engine import get_engine
 from config import BACKUP_DIR, settings
 from database import crud, db_session
@@ -31,14 +37,6 @@ class EditSetting(StatesGroup):
     language = State()
 
 
-class AddAdmin(StatesGroup):
-    details = State()
-
-
-class RemoveAdmin(StatesGroup):
-    target = State()
-
-
 class RestoreDb(StatesGroup):
     document = State()
 
@@ -47,10 +45,11 @@ def is_owner(event: CallbackQuery | Message) -> bool:
     return event.from_user.id == settings.owner_id
 
 
-async def overview(callback: CallbackQuery) -> None:
+async def overview(callback: CallbackQuery, scope: Scope) -> None:
     async with db_session() as session:
         values = await crud.all_settings(session)
-        counts = await crud.order_counts_by_status(session)
+        counts = await crud.order_counts_by_status(session, account_ids=scope.ids)
+        tenants, total_orders = await crud.platform_totals(session)
     hours = values.get("working_hours", "")
     open_now = in_working_hours(hours)
     pending_slips = counts.get("awaiting_verify", 0)
@@ -63,9 +62,12 @@ async def overview(callback: CallbackQuery) -> None:
         f"📉 Stock alert threshold: <b>{values.get('stock_alert_threshold')}</b>\n"
         f"🌐 ភាសា: <b>{values.get('language')}</b>\n"
         f"🧠 AI backend: <b>{esc(get_engine().name)}</b>\n"
-        f"🔑 Fernet key: <b>{'✅ កំណត់រួច' if settings.fernet_key else '❌ មិនទាន់ (ត្រូវការសម្រាប់ ជំហានទី ២)'}</b>\n"
-        f"🛒 Order រង់ចាំផ្ទៀងផ្ទាត់: <b>{pending_slips}</b>\n\n"
-        + ("👤 <b>Owner</b> — កែបានគ្រប់ផ្នែក" if is_owner(callback) else "👮 <b>Admin ជំនួយ</b> — មើលបានតែប៉ុណ្ណោះ")
+        f"🔑 Fernet key: <b>{'✅ កំណត់រួច' if settings.fernet_key else '❌ មិនទាន់ (ត្រូវការសម្រាប់ ជំហានទី ២)'}</b>\n\n"
+        f"🛒 Order រង់ចាំផ្ទៀងផ្ទាត់ <b>ក្នុងហាងរបស់អ្នក</b>: <b>{pending_slips}</b>\n\n"
+        f"📊 <b>ប្រព័ន្ធទាំងមូល</b> (ចំនួនសរុប គ្មានទិន្នន័យលម្អិត)\n"
+        f"🏪 ម្ចាស់ហាង: <b>{tenants}</b> · 🛒 Order សរុប: <b>{total_orders}</b>\n\n"
+        "👤 <b>Owner</b> — កែបានគ្រប់ផ្នែក global\n"
+        "<i>ទិន្នន័យលម្អិតរបស់ហាងនីមួយៗ លាក់ទាំងស្រុង សូម្បីតែ Owner។</i>"
     )
     if callback.message is None:
         await callback.answer()
@@ -75,9 +77,9 @@ async def overview(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "menu:settings", OwnerOnly())
-async def cb_settings_root(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_settings_root(callback: CallbackQuery, state: FSMContext, scope: Scope) -> None:
     await state.set_state(None)
-    await overview(callback)
+    await overview(callback, scope)
 
 
 @router.callback_query(F.data == "set:hours", OwnerOnly())
@@ -128,7 +130,7 @@ async def md_off_reply(message: Message, state: FSMContext) -> None:
 
 
 @router.callback_query(F.data == "set:ai", OwnerOnly())
-async def cb_toggle_ai(callback: CallbackQuery) -> None:
+async def cb_toggle_ai(callback: CallbackQuery, scope: Scope) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
         return
@@ -136,12 +138,12 @@ async def cb_toggle_ai(callback: CallbackQuery) -> None:
         current = await crud.get_setting(session, "ai_enabled", "on")
         new = "off" if current == "on" else "on"
         await crud.set_setting(session, "ai_enabled", new)
-    await overview(callback)
+    await overview(callback, scope)
     await callback.answer(f"🤖 AI global → {new}")
 
 
 @router.callback_query(F.data == "set:userbot", OwnerOnly())
-async def cb_toggle_userbot(callback: CallbackQuery) -> None:
+async def cb_toggle_userbot(callback: CallbackQuery, scope: Scope) -> None:
     """flag តែមួយដែល Userbot (ជំហានទី ២) នឹងអាន = ដូច /stopbot និង /startbot។"""
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
@@ -150,7 +152,7 @@ async def cb_toggle_userbot(callback: CallbackQuery) -> None:
         current = await crud.get_setting(session, "userbot_enabled", "on")
         new = "off" if current == "on" else "on"
         await crud.set_setting(session, "userbot_enabled", new)
-    await overview(callback)
+    await overview(callback, scope)
     await callback.answer(f"📱 Userbot → {new}")
 
 
@@ -199,14 +201,14 @@ async def cb_lang(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.startswith("set:lang:"), OwnerOnly())
-async def cb_lang_pick(callback: CallbackQuery) -> None:
+async def cb_lang_pick(callback: CallbackQuery, scope: Scope) -> None:
     if not is_owner(callback):
         await callback.answer(OWNER_ONLY, show_alert=True)
         return
     language = callback.data.split(":")[-1]
     async with db_session() as session:
         await crud.set_setting(session, "language", language)
-    await overview(callback)
+    await overview(callback, scope)
     await callback.answer(f"🌐 {language}")
 
 
@@ -303,128 +305,3 @@ async def cb_restore_apply(callback: CallbackQuery, state: FSMContext) -> None:
     )
     await callback.answer("restore រួចរាល់")
 
-
-# ---------------- Admins ----------------
-
-@router.callback_query(F.data == "menu:admins", OwnerOnly())
-async def cb_admins_root(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(None)
-    if not is_owner(callback):
-        await callback.answer(OWNER_ONLY, show_alert=True)
-        return
-    async with db_session() as session:
-        admins = await crud.list_admins(session)
-    if callback.message is None:
-        await callback.answer()
-        return
-    body = f"🔐 <b>Admins</b>\n\n👑 Owner: <code>{settings.owner_id}</code> (មិនអាចលុប)\n"
-    body += "\n".join(f"👮 <code>{item.telegram_id}</code> — {esc(item.name or '—')}" for item in admins)
-    if not admins:
-        body += "\n<i>មិនមាន Admin ជំនួយទេ</i>"
-    await callback.message.edit_text(body, reply_markup=keyboards.admins_menu(admins))
-    await callback.answer()
-
-
-@router.callback_query(F.data == "adm:add", OwnerOnly())
-async def cb_admin_add(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_owner(callback):
-        await callback.answer(OWNER_ONLY, show_alert=True)
-        return
-    await state.set_state(AddAdmin.details)
-    if callback.message is None:
-        await callback.answer()
-        return
-    await callback.message.answer("➕ ផ្ញើ <code>TelegramID ឈ្មោះ</code> (ឧ. <code>987654321 Sokha</code>):")
-    await callback.answer()
-
-
-@router.message(AddAdmin.details, F.text, OwnerOnly())
-async def md_admin_add(message: Message, state: FSMContext) -> None:
-    parts = message.text.split(maxsplit=1)
-    try:
-        telegram_id = int(parts[0])
-    except (ValueError, IndexError):
-        await message.answer("⛔ ទ្រង់ទ្រាយ: <code>ID ឈ្មោះ</code>")
-        return
-    name = parts[1].strip() if len(parts) > 1 else ""
-    async with db_session() as session:
-        if telegram_id == settings.owner_id:
-            await state.set_state(None)
-            await message.answer("ℹ️ ID នេះជា Owner ហើយ — មិនចាំបាច់បន្ថែម")
-            return
-        added = await crud.add_admin(session, telegram_id, name)
-        admins = await crud.list_admins(session)
-    await state.set_state(None)
-    await message.answer(
-        f"{'✅ បានបន័ែម' if added else '⚠️ Admin នេះមានស្រាប់'} <code>{telegram_id}</code> {esc(name)}\n"
-        "⚠️ Admin ជំនួយមិនអាចកែ Settings, Admins ឬ Restore បានទេ",
-        reply_markup=keyboards.admins_menu(admins),
-    )
-
-
-@router.callback_query(F.data == "adm:remove", OwnerOnly())
-async def cb_admin_remove(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_owner(callback):
-        await callback.answer(OWNER_ONLY, show_alert=True)
-        return
-    await state.set_state(RemoveAdmin.target)
-    if callback.message is None:
-        await callback.answer()
-        return
-    await callback.message.answer("🗑 ផ្ញើ <code>TelegramID</code> ដែលត្រូវលុបចេញពី Admin:")
-    await callback.answer()
-
-
-@router.message(RemoveAdmin.target, F.text, OwnerOnly())
-async def md_admin_remove(message: Message, state: FSMContext) -> None:
-    try:
-        telegram_id = int(message.text.split()[0])
-    except (ValueError, IndexError):
-        await message.answer("⛔ ត្រូវជាលេខ ID:")
-        return
-    if telegram_id == settings.owner_id:
-        await message.answer("⛔ មិនអាចលុប Owner បានទេ")
-        await state.set_state(None)
-        return
-    async with db_session() as session:
-        await crud.remove_admin(session, telegram_id)
-        admins = await crud.list_admins(session)
-    await state.set_state(None)
-    await message.answer(f"✅ បានលុប <code>{telegram_id}</code>", reply_markup=keyboards.admins_menu(admins))
-
-
-@router.message(Command("addadmin"), OwnerOnly())
-async def cmd_add_admin(message: Message, command: CommandObject) -> None:
-    if not is_owner(message):
-        await message.answer(OWNER_ONLY)
-        return
-    if not command.args:
-        await message.answer("ℹ️ ប្រើ: <code>/addadmin 987654321 ឈ្មោះ</code>")
-        return
-    parts = command.args.split(maxsplit=1)
-    try:
-        telegram_id = int(parts[0])
-    except ValueError:
-        await message.answer("⛔ ID ត្រូវជាលេខ")
-        return
-    async with db_session() as session:
-        added = await crud.add_admin(session, telegram_id, parts[1].strip() if len(parts) > 1 else "")
-    await message.answer(f"{'✅ បានបន័ែម' if added else '⚠️ មានស្រាប់'} <code>{telegram_id}</code>")
-
-
-@router.message(Command("deladmin"), OwnerOnly())
-async def cmd_del_admin(message: Message, command: CommandObject) -> None:
-    if not is_owner(message):
-        await message.answer(OWNER_ONLY)
-        return
-    if not command.args:
-        await message.answer("ℹ️ ប្រើ: <code>/deladmin 987654321</code>")
-        return
-    try:
-        telegram_id = int(command.args.split()[0])
-    except ValueError:
-        await message.answer("⛔ ID ត្រូវជាលេខ")
-        return
-    async with db_session() as session:
-        await crud.remove_admin(session, telegram_id)
-    await message.answer(f"✅ បានលុប <code>{telegram_id}</code> (បើមិនមែន Owner)")
