@@ -14,8 +14,33 @@ from helpers import esc, money
 
 
 def build(rows: Sequence[Sequence[tuple[str, str] | None]]) -> InlineKeyboardMarkup:
-    clean = [[InlineKeyboardButton(text=text, callback_data=data) for text, data in row if data] for row in rows]
+    """(label, value) → button។ value ចាប់ផ្តើមដោយ `http://`/`https://` គឺ **URL button**
+    (Telegram បើក browser) មិនមែន callback_data ទេ — ព្រោះ callback_data កំណត់ ៦៤ bytes
+    ហើយ handler ទាំងអស់សន្មត់ string `section:action[:args]` ដែល URL មិនមែនជារូបភាពនោះ។
+    """
+    clean = [
+        [
+            (
+                InlineKeyboardButton(text=text, url=data)
+                if data.startswith(("http://", "https://"))
+                else InlineKeyboardButton(text=text, callback_data=data)
+            )
+            for text, data in row
+            if data
+        ]
+        for row in rows
+    ]
     return InlineKeyboardMarkup(inline_keyboard=[row for row in clean if row])
+
+
+def web_app_row() -> list[tuple[str, str]] | None:
+    """ប៊ូតុងតំណទៅ Session Web App — `None` ពេល URL មិនចាប់ផ្តើមដោយ http (មិនទាន់ deploy
+    ឬម្ចាស់បិតដោយ `SESSION_WEB_URL=off`) ទើបមេនុមិនបង្ហាញប៊ូតុងដែលចុចមិនបាន។
+    """
+    from config import settings  # import ក្នុង function ទើប test patch settings បាន
+
+    url = (settings.session_web_url or "").strip()
+    return [("🌐 បង្កើត Session String", url)] if url.startswith("http") else None
 
 
 def pager(prefix: str, page: int, pages: int) -> list[tuple[str, str]]:
@@ -42,6 +67,11 @@ def main_menu(is_owner: bool) -> InlineKeyboardMarkup:
     """
     rows = [
         [("📱 គណនី Telegram", "menu:accounts"), ("➕ បន័ែមគណនី", "acc:addsession")],
+    ]
+    web = web_app_row()
+    if web:  # មិនទាន់ deploy Web App → គ្មានជួរនេះ ទើបមេនុមិនមានប៊ូតុងចុចមិនបាន
+        rows.append(web)
+    rows += [
         [("📦 ផលិតផល", "menu:products"), ("🏷 ប្រភេទអីវ៉ាន់", "menu:categories")],
         [("💳 QR Code", "menu:qr"), ("🛒 Orders", "menu:orders")],
         [("👥 អតិថិជន", "menu:customers"), ("📊 Analytics", "menu:analytics")],
@@ -321,6 +351,9 @@ def accounts_menu(accounts: Sequence[Account], scope: "Scope | None" = None) -> 
     if len(accounts) > len(shown):
         rows.append([(f"… មានទៀត {len(accounts) - len(shown)} គណនី · មើលបញ្ជីខាងលើ", "noop:more")])
     rows.append([("➕ បន័ែមគណនី (Session String)", "acc:addsession")])
+    web = web_app_row()
+    if web:  # តំណទៅ Web App ជិតប៊ូតុងបន័ែមគណនី ព្រោះគឺជាកន្លែងបង្កើត Session String
+        rows.append(web)
     rows.append([("ℹ️ របៀបបន័ែមគណនី", "acc:howto")])
     rows.append([BACK_MAIN])
     return build(rows)

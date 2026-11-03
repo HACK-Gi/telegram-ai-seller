@@ -1,0 +1,26 @@
+# Render Blueprint សម្រាប់ករណី `session_web/` ជា repo ដាច់ដោយឡែក ឬ Web Service
+# ដែល Root Directory = `session_web` (Render អាន render.yaml ក្នុង directory នោះ)។
+# ឯកសារដូចគ្នាមាននៅ root របស់ repo ធំ (`../render.yaml` + `rootDir: session_web`)។
+#
+# ⚠️ កុំ deploy Bot (`main.py`) លើ Render free — គ្មាន persistent disk ទើប DB/media បាត់
+#    គ្រប់ deploy។ Bot នៅតែរត់លើ VPS មានតែ Session Web ប៉ុណ្ណោះមកទីនេះ។
+services:
+  - type: web
+    name: bot-auto-sell-make-session
+    runtime: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # `$PORT` របស់ Render ជា 10000 — bind លេខផ្សេង = deploy ជោគជ័យ តែ site ឱ្យ 404/502
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: SESSION_WEB_SECRET
+        sync: false # ← Fernet key ដាក់ក្នុង Render Dashboard មិន commit តម្លៃទេ
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: SESSION_WEB_TTL
+        value: "600"
+      - key: SESSION_WEB_TIMEOUT
+        value: "45"

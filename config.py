@@ -19,7 +19,10 @@ SESSION_DIR = BASE_DIR / "data" / "sessions"
 
 # គេហទំព័រ «Make Session» (session_web/) — ភ្ញៀវបង្កើត Session String ខ្លួនឯង មុនផ្ញើមក
 # /addsession។ កែតាម SESSION_WEB_URL; ដាក់វត្ថុដែលមិនចាប់ផ្តើមដោយ http = លាក់តំណ។
-DEFAULT_SESSION_WEB_URL = "https://bot-auto-sell-make-session.vercel.app"
+# លំនាំដើម = Render (always-on ទើប Telethon មិនដាច់ដូច Vercel cold start)។ URL នេះត្រូវ
+# `name:` ក្នុង render.yaml — បើបងប្តូរឈ្មោះ service ក្នុង Dashboard ត្រូវកែ `SESSION_WEB_URL`
+# ក្នុង .env តាម (Deploy រួច copy URL ពិតមកដាក់)។
+DEFAULT_SESSION_WEB_URL = "https://bot-auto-sell-make-session.onrender.com"
 
 for _d in (PRODUCT_MEDIA_DIR, QR_MEDIA_DIR, BACKUP_DIR, LOG_DIR, SESSION_DIR, MEDIA_DIR):
     _d.mkdir(parents=True, exist_ok=True)

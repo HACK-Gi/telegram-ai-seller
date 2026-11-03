@@ -156,7 +156,7 @@ async def chat_completions(request: Request):
         try:
             content = await call_cli(build_prompt(system, history, user_text))
         except RuntimeError as exc:
-            logger.error(str(exc))
+            logger.error("cli runtime error: %s", type(exc).__name__)
             return openai_error(502, str(exc))
 
     elapsed = time.monotonic() - started
@@ -187,7 +187,7 @@ async def chat_completions(request: Request):
 @app.exception_handler(Exception)
 async def unhandled(request: Request, exc: Exception) -> JSONResponse:
     """Any unexpected crash → OpenAI-shaped 500, and never echo the prompt."""
-    logger.exception("unhandled error on %s: %s", request.url.path, exc)
+    logger.exception("unhandled error on %s", request.url.path)  # traceback តែមិន message ដើម
     return openai_error(500, f"{type(exc).__name__}: {exc}")
 
 

@@ -453,7 +453,10 @@ def server_error(error):
 
 
 if __name__ == "__main__":
-    host = os.getenv("SESSION_WEB_HOST") or "127.0.0.1"
-    port = int(os.getenv("SESSION_WEB_PORT") or 5050)
+    # Render/Heroku កំណត់ `PORT` (ឧ. 10000) ហើយត្រូវ bind 0.0.0.0 ទើប platform reach បាន។
+    # `SESSION_WEB_PORT` នៅជា fallback សម្រាប់កុំព្យូទ័រម្ចាស់ (លំនាំដើម ៥០៥០ ព្រោះ ៣០០០
+    # ជាកំពូលរបស់ Qoder proxy លើ VPS តែមួយ)។ ពេល deploy តាម gunicorn ប្លុកនេះមិនរត់ទេ។
+    host = os.getenv("SESSION_WEB_HOST") or "0.0.0.0"
+    port = int(os.getenv("PORT") or os.getenv("SESSION_WEB_PORT") or 5050)
     print(f"🔐 Make Session web រត់នៅ http://{host}:{port}  (Ctrl+C ដើម្បីបិទ)")
     app.run(host=host, port=port, debug=False)

@@ -109,7 +109,10 @@ def ensure_qoder_cli(*, install_timeout: int = 600) -> bool:
     try:
         result = _run_script(script, timeout=install_timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("ដំឡើង Qoder CLI មិនបាន: %s — Bot នៅរត់បានដោយ Fallback (Groq/Mock)", exc)
+        log.warning(
+            "ដំឡើង Qoder CLI មិនបាន: %s — Bot នៅរត់បានដោយ Fallback (Groq/Mock)",
+            type(exc).__name__,  # ឈ្មោះ class តែប៉ុណ្ណោះ (privacy test ការពារ message ដើម)
+        )
         return False
     _log_output(result)
     ready = result.returncode == 0 and qoder_cli_path() is not None
@@ -141,7 +144,7 @@ def ensure_qoder_proxy(*, wait_seconds: float = 20.0) -> bool:
     try:
         result = _run_script(script, "--bg", timeout=120)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        log.warning("ចាប់ផ្តើម Qoder Proxy មិនបាន: %s", exc)
+        log.warning("ចាប់ផ្តើម Qoder Proxy មិនបាន: %s", type(exc).__name__)
         return False
     _log_output(result)
 

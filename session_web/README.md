@@ -14,26 +14,45 @@ cd /home/mengly20132013/telegram-ai-seller
 
 បើក `http://127.0.0.1:5050` ក្នុង browser រួចធ្វើតាម ៣ ជំហានលើអេក្រង់។
 
-## ២. Deploy ទៅ Vercel
+## ២. Deploy
+
+### ក. Render (អនុសាសន៍ — always-on ទើប Telethon មិនដាច់)
+
+```bash
+# ១. Push repo ទៅ GitHub រួច ២. Render → New → Blueprint → ជ្រើស repo
+#    Render អាន `render.yaml` នៅ root (rootDir: session_web) រួច deploy ដោយស្វ័យប្រវត្តិ
+# ៣. ដាក់ Fernet key ក្នុង Dashboard → Environment → SESSION_WEB_SECRET → Redeploy ម្តង
+curl https://bot-auto-sell-make-session.onrender.com/health
+#   {"ok":true,"secret_configured":true,...}  ← false មានន័យថាមិនទាន់ដាក់ secret
+```
+
+`render.yaml` (root + `session_web/`) កំណត់: runtime python · plan free · region singapore ·
+build `pip install -r requirements.txt` · start `gunicorn app:app --bind 0.0.0.0:$PORT
+--workers 1 --timeout 120` · `healthCheckPath: /health` · `autoDeploy: true`។ ឯកសារ
+`Procfile` មានខ្លឹមសារដូចគ្នា (fallback សម្រាប់ platform ដែលអាន Procfile)។
+⚠️ Render free **sleep ១៥ នាទី** ពេលគ្មាន traffic (request ដំបូងរង់ចាំ ~៣០s) ហើយ
+**គ្មាន persistent disk** — ទើបបានជា app នេះ design គ្មាន DB/File តែម្តង។
+
+### ខ. Vercel (ជម្រើស — Cold Start + AWS IP ធ្វើឱ្យ OTP តែងបរាជ័យ)
 
 ```bash
 cd session_web
 vercel login            # លើកដំបូងតែប៉ុណ្ណោះ (ត្រូវការគណនី Vercel របស់អ្នក)
-vercel --prod
+vercel --prod           # → https://bot-auto-sell-make-session.vercel.app
 ```
 
 `vercel.json` ប្រើ `@vercel/python` ហើយ route `/(.*)` ទៅ `app.py` (Flask ជា WSGI
-object ឈ្មោះ `app` — Vercel រកឃើញស្វ័យប្រវត្តិ)។ URL ដែលទទួលបាន ប្រហែល
-`https://bot-auto-sell-make-session.vercel.app`។
+object ឈ្មោះ `app` — Vercel រកឃើញស្វ័យប្រវត្តិ)។
 
-### Env variables ក្នុង Vercel Project Settings
+### Env variables (Render Dashboard → Environment · ឬ Vercel Project Settings)
 
 | Key | ចាំបាច់? | សារៈ |
 |---|---|---|
 | `SESSION_WEB_SECRET` | ណែនាំខ្លាំង | Fernet key សម្រាប់ pending token — បង្កើតដោយ `.venv/bin/python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"`។ បើមិនដាក់ → key បណ្តោះអាសន្ន per isolate (ភ្ញៀវត្រូវសុំ OTP ឡើងវិញ ពេល isolate ផ្លាស់ប្តូរ) |
 | `SESSION_WEB_URL` | មិនចាំបាច់ | `https://<domain>` — ដាក់ CORS ឱ្យតែ origin របស់ app ខ្លួន |
 | `SESSION_WEB_TTL` | ទេ | វិនាទី សម្រាប់ pending token (default `600`) |
-| `SESSION_WEB_TIMEOUT` | ទេ | វិនាទី សម្រាប់ពេល Telegram ឆ្លើយ (default `30`) |
+| `SESSION_WEB_TIMEOUT` | ទេ | វិនាទី សម្រាប់ពេល Telegram ឆ្លើយ (default `30` — Render ដាក់ `45` បាន ព្រោះ gunicorn `--timeout 120`; Vercel កុំលើស `45`) |
+| `PORT` | ទេ | Render/Heroku កំណត់ឯង (10000) — gunicorn bind `$PORT` តាម startCommand ទើប site មិន 404 |
 
 ## ៣. របៀបប្រើ (សម្រាប់ភ្ញៀវ)
 

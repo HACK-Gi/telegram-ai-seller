@@ -107,6 +107,8 @@ let requestId = "";
 
 function showStep(id) {
   steps.forEach((s) => { $(s).hidden = s !== id; });
+  // ភ្ញៀវលើទូរស័ព្ម: ប្រអប់ Session នៅក្រោម fold ទើប «មិនឃើញ» អ្វីកើតឡើង បើមិនរំកិល
+  if (id !== "step-creds") $(id).scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function setStatus(kind, text) {
@@ -120,7 +122,11 @@ function clearStatus() {
   const box = $("status");
   box.className = "";
   box.textContent = "";
-  box.style.display = "none";
+  // កុំដាក់ style.display="none" — inline style មានសិទ្ធិខ្ពស់ជាង `#status.ok { display:block }`
+  // ទើបគ្រប់ clearStatus() មុន fetch នីមួយៗធ្វើឱ្យសារ «✅ ជោគជ័យ» និង error គ្មានអ្នកមើលឃើញ
+  // (ភ្ញៀវគេគិតថា Session មិនបង្ហាញ ទោះប្រអប់ session មានខ្លឹមសារក៏ដោយ)។ className="" គ្រប់គ្រាន់
+  // ព្រោះ `#status` លំនាំដើម display:none រួចហើយ។
+  box.style.display = "";
 }
 
 /* message + detail (លេខកូដសុវត្ថិភាព — គ្មានទិន្នន័យផ្ទាល់ខ្លួន) ដើម្បីម្ចាស់ trace បាន */
@@ -227,15 +233,30 @@ $("btn-restart").addEventListener("click", () => {
 
 $("btn-copy").addEventListener("click", async () => {
   const value = $("session").value.trim();
+  const btn = $("btn-copy");
   if (!value) { setStatus("err", "ប្រអប់ទទេ — សូមចាប់ផ្តើមឡើងវិញ រួចសុំ OTP ថ្មី"); return; }
+  let copied = false;
   try {
     await navigator.clipboard.writeText(value);
+    copied = true;
   } catch (e) {
+    // WebView (Telegram in-app browser) + Chrome Android ជាច្រើនបិទ clipboard API → fallback ច្បាស់
+    try {
+      $("session").focus();
+      $("session").select();
+      copied = document.execCommand("copy");
+    } catch (e2) { copied = false; }
+  }
+  if (copied) {
+    btn.textContent = "✅ បានចម្លង!";
+    setTimeout(() => { btn.textContent = "ចម្លង"; }, 2500);
+    setStatus("ok", "បានចម្លង! បើក Telegram រួចវាយ /addsession ហើយបិទក្រដាស (paste) នៅទីនោះ។");
+  } else {
+    // ប្រាប់តាមដង កុំអះអាងថាចម្លងបាន ទើបភ្ញៀវមិនផ្ញើសារទទេទៅ Bot
     $("session").focus();
     $("session").select();
-    document.execCommand("copy");
+    setStatus("err", "Browser មិនអនុញ្ញាតឱ្យចម្លងស្វ័យប្រវត្តិ — សូមចុចយូរលើប្រអប់ Session ខាងលើ រួចចម្លងដោយខ្លួនឯង (Copy) ហើយផ្ញើទៅ Bot តាម /addsession។");
   }
-  setStatus("ok", "បានចម្លង! បើក Telegram រួចវាយ /addsession ហើយបិទក្រដាស (paste) នៅទីនោះ។");
 });
 
 $("btn-again").addEventListener("click", () => {

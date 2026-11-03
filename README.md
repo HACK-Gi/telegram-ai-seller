@@ -174,9 +174,10 @@ Auto-Install Qoder CLI + Auto-Run Proxy **តែនៅពេលជា VPS** (ម
 | Platform | Bot | Userbot | Qoder AI | Session Web |
 | :--- | :--- | :--- | :--- | :--- |
 | **VPS / Cloud Shell** | ✅ | ✅ | ✅ Auto-Install | ✅ |
-| **Render / Railway** | ✅ | ✅ | ✅ Auto-Install | ✅ |
+| **Render / Railway** (មាន disk/PVOL) | ✅ | ✅ | ✅ Auto-Install | ✅ |
+| **Render free (គ្មាន persistent disk)** | ❌ DB/media បាត់គ្រប់ deploy | ❌ | ✅ Auto-Install (បាត់ពេល redeploy) | ✅ (ទីដែលគួរប្រើ) |
 | **Heroku** | ✅ | ✅ | ⚠️ ត្រូវ buildpack | ✅ |
-| **Vercel / Netlify** | ❌ | ❌ | ❌ (រំលង) | ✅ |
+| **Vercel / Netlify** | ❌ | ❌ | ❌ (រំលង) | ⚠️ បាន ប៉ុន្តែ Cold Start កាត់ Telethon |
 
 សញ្ញាដែលរាប់ជា Serverless (រំលង Auto-Install ទាំង `install_qoder.sh` និង `main.py`)៖
 `VERCEL` · `VERCEL_ENV` · `NETLIFY` · `AWS_LAMBDA_FUNCTION_NAME`។
@@ -190,7 +191,8 @@ VERCEL=1 .venv/bin/python main.py          # Bot ចាប់ផ្តើមដ�
 ចំណាំ៖
 * **Cloud Shell** អាច reset ពេលបិទ >១២០ នាទី → CLI បាត់ ប៉ុន្តែ `main.py` ដំឡើងឡើងវិញជានិច្ចពេល Startup។
 * **Vercel** គាំទ្រតែ `session_web/` (គ្មាន polling Telegram ជាប់ជានិច្ច ហើយគ្មាន filesystem) — កុំ Deploy ទាំង Bot ឡើង។
-* **Bot គួររត់លើ VPS/Render/Railway** រីឯ Session Web ប៉ុណ្ណោះដែល Deploy ទៅ Vercel។
+* **Bot ត្រូវរត់លើ VPS** (សរីរាង្គ `data/` + `media/` + `backups/` ជានិច្ច) រីឯ **Session Web
+  deploy ទៅ Render** — `render.yaml` នៅ root គឺជា Blueprint របស់វា (មើល «🌐 Deploy Session Web App»)។
 
 ## ៥. រចនាសម្ព័ន្ធ
 
@@ -212,6 +214,9 @@ userbot/                (ជំហានទី ២.១ — ដំណើរកា
                         /stopbot /startbot /status) · outbox.py (single writer ក្នុង
                         មួយគណនី) · limits.py · session_store.py · safety.py ·
                         coalescer.py · text_delay.py · chat_login.py (login តាម chat)
+render.yaml             Render Blueprint (rootDir: session_web) — ឯកសារដូចគ្នាក្នុង session_web/
+session_web/            Flask + Telethon «Make Session» · app.py · templates/ · Procfile ·
+                        requirements.txt (gunicorn) · vercel.json — គ្មាន DB ជានិច្ច
 data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — gitignore ទាំងអស់
 ```
 
@@ -280,38 +285,82 @@ data/ media/ backups/ logs/   ទិន្នន័យម៉ាស៊ីន — 
 ទូរស័ព្ទ, OTP ឬ session ទេ ហើយ pending state រវាង request ទី១–២ ជា **Fernet token stateless**
 (single-use + TTL) ព្រោះ serverless isolate មិនចែក memory គ្នា។ ឯកសារពេញ: `session_web/README.md`។
 
+**ទីដាក់ដែលគួរប្រើ = Render (always-on)** — Vercel នៅរត់បាន ប៉ុន្តែ Cold Start កាត់ connection
+របស់ Telethon ហើយ IP AWS តែងឃើញ Telegram សង្ស័យ (`SignInUnapproved`/`PhoneNumberOc2Requested`)។
+
+### ក. Render Blueprint (អនុសាសន៍ — Auto-Deploy ពី GitHub)
+
 ```bash
-# ១. រត់ក្នុង machine (សាកល្បងមុន deploy)
-.venv/bin/python session_web/app.py                      # → http://127.0.0.1:5050
+# ១. Push កូដទៅ GitHub រួច (Render deploy ពី repo តែប៉ុណ្ណោះ)
+git remote add origin https://github.com/<USERNAME>/telegram-ai-seller.git
+git push -u origin main
 
-# ២. Deploy ទៅ Vercel (ឥតគិតថ្លៃ) — ត្រូវ log in រួច (`vercel whoami`)
-cd session_web
-vercel deploy --prod --yes --project bot-auto-sell-make-session --create-if-missing
-#  គួរឃើញ: ▲ Aliased  https://bot-auto-sell-make-session.vercel.app
-
-# ៣. Secret សម្រាប់ sign pending token (បើមិនដាក់ → key បណ្តោះអាសន្ន per isolate
-#    ហើយភ្ញៀវត្រូវសុំ OTP ឡើងវិញពេល isolate ផ្លាស់ប្តូរ)
-.venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
-  | vercel env add SESSION_WEB_SECRET --environment production --project bot-auto-sell-make-session --non-interactive
-
-# ៤. Redeploy ដើម្បី apply env var
-vercel deploy --prod --yes --project bot-auto-sell-make-session
+# ២. Fernet key ថ្មី → ដាក់ក្នុង Render Dashboard → Service → Environment → SESSION_WEB_SECRET
+.venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-បន្ទាប់ពី deploy រួច ដាក់ URL ពិតក្នុង `.env` របស់ Bot រួច restart (តំណនេះបង្ហាញក្នុង
-`/addsession` និង menu Accounts → របៀបប្រើ)៖
+Render → **New → Blueprint** → ជ្រើស repo → Render អាន `render.yaml` នៅ **root** រួច deploy
+service `bot-auto-sell-make-session` (`rootDir: session_web`, region singapore, plan free,
+`autoDeploy: true` = រាល់ `git push` ម្តង deploy ឡើងវិញដោយស្វ័យប្រវត្តិ)។
 
-```
-SESSION_WEB_URL=https://bot-auto-sell-make-session.vercel.app
+### ខ. ឬ New → Web Service ដោយដៃ
+
+| ការកំណត់ | តម្លៃ |
+|---|---|
+| Root Directory | `session_web` |
+| Runtime | Python (`PYTHON_VERSION=3.11.9`) |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120` (= `session_web/Procfile`) |
+| Environment | `SESSION_WEB_SECRET` (Fernet key · មិន commit) |
+| Health Check Path | `/health` |
+
+### គ. ផ្ទៀងផ្ទាត់ រួចប្តូរ URL ក្នុង Bot
+
+```bash
+curl https://bot-auto-sell-make-session.onrender.com/health
+# {"ok":true,"secret_configured":true,"ttl":600,"timeout":45,"version":"..."}
+#  ⚠️ secret_configured ត្រូវជា true — បើ false = មិនទាន់ដាក់ SESSION_WEB_SECRET ភ្ញៀវverify មិនបាន
+
+nano .env        # SESSION_WEB_URL=https://<URL ពិតពី Render Dashboard>
+pkill -f "python.*main.py"
+nohup .venv/bin/python main.py >> logs/run.out 2>&1 &
 ```
 
-> ⚠️ **Vercel = AWS IP** — Telegram តែងសង្ស័យ login ពី datacenter (អាចជួប
-> `PhoneNumberAppForbidden` ឬ ត្រូវចុច link ដែល Telegram ផ្ញើទៅ app)។ បើបរាជ័យ →
-> ប្រើ `scripts/get_session.py` លើ machine របស់ភ្ញៀវ, ផ្លាស់ទៅ Render/Railway (always-on),
-> ឬ tool ฝั่ง client ដូចជា <https://gabrielmaialva33.github.io/ssg/> (session មិនឆ្លង server)។
+Bot បង្ហាញ URL នេះជា **ប៊ូតុង 🌐 បង្កើត Session String** (URL button បើក browser) នៅក្នុង
+មេនុសំខាន់ + មេនុគណនី និងជាតំណក្នុង `/addsession`/`acc:howto`។ ដាក់ `SESSION_WEB_URL=off`
+= លាក់ប៊ូតុងនិងតំណទាំងអស់ (បើមិនទាន់ deploy)។
+
+រត់តេស្ត offline ទាំងflow និង config Render:
+
+```bash
+.venv/bin/python scripts/smoke_test_session_web.py
+```
+
+> ⚠️ **កុំ deploy Bot (`main.py`) លើ Render free plan** — Render គ្មាន persistent disk ទើប
+> `data/app.db` · `media/` · `backups/` ត្រូវសាងឡើងវិញពីសូន្យ គ្រប់ deploy/restart។ Bot ត្រូវរត់
+> លើ VPS មានតែ Session Web (stateless) ប៉ុណ្ណោះដែលនៅ Render។
+> ⚠️ **Render free tier sleep ១៥ នាទី** ពេលគ្មាន request → request ដំបូងរង់ចាំ ~៣០s (cold)។
+> បើចង់ always-on ពេញលេញ → Starter $7/ខែ។
+> ⚠️ បើ login ពី IP datacenter នៅតែត្រូវ Telegram បដិសេធ → ប្រើ `scripts/get_session.py` លើ
+> កុំព្យូទ័ររបស់ភ្ញៀវ ឬ tool ផ្ទាល់ browser ដូចជា <https://gabrielmaialva33.github.io/ssg/>
+> (session មិនឆ្លង server)។
 > ⚠️ Server-side generator ឃើញ api_hash របស់ភ្ញៀវជានិច្ច (វាត្រូវប្រើវា) — កុំបើក request-body
 > log នៅ layer ខាងមុខ ហើយកុំចែក `SESSION_WEB_SECRET`/`SESSION_FERNET_KEY` ទៅណាទេ។
 > បើមិនទាន់ deploy → ដាក់ `SESSION_WEB_URL=off` ដើម្បីលាក់តំណពី Bot។
+
+<details>
+<summary>ជំនួសវិញ: Deploy ទៅ Vercel (ឥតគិតថ្លៃ ប៉ុន្តែ Cold Start + AWS IP)</summary>
+
+```bash
+cd session_web
+vercel deploy --prod --yes --project bot-auto-sell-make-session --create-if-missing
+#  គួរឃើញ: ▲ Aliased  https://bot-auto-sell-make-session.vercel.app
+.venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" \
+  | vercel env add SESSION_WEB_SECRET --environment production --project bot-auto-sell-make-session --non-interactive
+vercel deploy --prod --yes --project bot-auto-sell-make-session   # redeploy ដើម្បី apply env
+```
+
+</details>
 
 ## 👥 Multi-User (Owner + Staff)
 

@@ -62,14 +62,21 @@ def _session_web_hint(format_type: str = "html") -> str:
         return ""
     if format_type == "html":
         return (
-            "\n\n🌐 <b>ដើម្បីងាយស្រួល</b> — បង្កើត Session String តាម Web App:\n"
-            f'<a href="{esc(url)}">{esc(url)}</a>\n'
-            "បន្ទាប់មក ចម្លង Session String មកផ្ញើទីនេះ។"
+            "\n\n🌐 <b>បង្កើត Session String តាម Web App (ងាយស្រួលជាង terminal)</b>\n"
+            f'👉 <a href="{esc(url)}">ចុចទីនេះ</a>\n'
+            f"<code>{esc(url)}</code>\n"
+            "១. វាយ API ID + API Hash + លេខទូរស័ព្ទ → <b>ផ្ញើ OTP</b>\n"
+            "២. វាយ OTP (គណនីមាន 2FA → វាយពាក្យសម្ងាត់បន្ថែម)\n"
+            "៣. ចុច <b>ចម្លង</b> → មកផ្ញើ Session String ទីនេះវិញ\n\n"
+            "⚠️ Web App មិនរក្សាទុកអ្វីទេ (គ្មាន DB/គ្មាន log) ហើយ Session របស់អ្នក"
+            "ត្រូវ <b>Encrypt មុន Save</b> ក្នុង DB របស់ Bot។"
         )
     return (
-        "\n\n🌐 **ដើម្បីងាយស្រួល** — បង្កើត Session String តាម Web App:\n"
-        f"{url}\n"
-        "បន្ទាប់មក ចម្លង Session String មកផ្ញើទីនេះ។"
+        "\n\n🌐 **បង្កើត Session String តាម Web App (ងាយស្រួលជាង terminal)**\n"
+        f"👉 {url}\n"
+        "១. វាយ API ID + API Hash + លេខទូរស័ព្ទ → ផ្ញើ OTP\n"
+        "២. វាយ OTP → ចម្លង Session String\n"
+        "៣. មកផ្ញើទីនេះវិញ (សារនឹងត្រូវលុបដោយស្វ័យប្រវត្តិ)\n"
     )
 
 
@@ -279,6 +286,7 @@ async def cmd_add_session(message: Message, state: FSMContext, scope: Scope) -> 
         )
         return
     await state.set_state(LoginStates.waiting_session)
+    web = keyboards.web_app_row()  # None ពេល Web App មិនទាន់ deploy → គ្មានប៊ូតុងតំណ
     await message.answer(
         "🔐 <b>បន្ថែមគណនីតាម Session String</b>\n\n"
         "<i>Session String ជាកូដវែងមួយជួរ (~៣៥២ តួអក្សរ) ដែលប្រើជំនួស OTP ហើយ"
@@ -298,6 +306,7 @@ async def cmd_add_session(message: Message, state: FSMContext, scope: Scope) -> 
         "🔒 Session String នឹងត្រូវ <b>Encrypt + Save</b> ក្នុង DB (Fernet) ដោយស្វ័យប្រវត្តិ\n"
         "📱 បន្ថែមគណនីបន្ទាប់ → វាយ <code>/addsession</code> ម្តងទៀត (គ្មានកំណត់)\n"
         "ℹ️ បោះបង់គ្រប់ពេល → <code>/cancel</code>",
+        reply_markup=keyboards.build([web]) if web else None,
     )
 
 

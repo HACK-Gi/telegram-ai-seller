@@ -756,16 +756,39 @@ async def main() -> int:
     expect("/addsession → រំលឹក Encrypt + Save", panel.said_since(mark, "Encrypt + Save"))
     expect("/addsession → បង្ហាញតំណ Web App", panel.said_since(mark, config.settings.session_web_url))
 
+    # ប៊ូតុង 🌐 ត្រូវជា **URL button** (Telegram បើក browser) មិនមែន callback_data — ៦៤ bytes មិនគ្រប់
+    from admin_bot import keyboards as kb
+    menu = kb.main_menu(True)
+    menu_urls = {b.url for row in menu.inline_keyboard for b in row if b.url}
+    menu_cbs = {b.callback_data for row in menu.inline_keyboard for b in row if b.callback_data}
+    expect("main_menu → ប៊ូតុង 🌐 ជា URL button ទៅ Web App", config.settings.session_web_url in menu_urls)
+    expect("main_menu → ប៊ូតុងផ្សេងនៅជា callback_data (មិនប្តូរ behavior)",
+           {"menu:accounts", "acc:addsession", "menu:products", "menu:settings"} <= menu_cbs)
+    expect("main_menu → គ្មានប៊ូតុង «Admins» / Add Admin ទៀត",
+           not any("Admins" in (b.text or "") or "addadmin" in (b.callback_data or "")
+                   for row in menu.inline_keyboard for b in row))
+    expect("accounts_menu → មាន URL button ទៅ Web App",
+           config.settings.session_web_url in {b.url for row in kb.accounts_menu([]).inline_keyboard
+                                               for b in row if b.url})
+
     mark = panel.mark()
     await panel.cb("acc:howto")
     expect("acc:howto → api_hash មិនដែលវាយតាម chat", panel.said_since(mark, "api_hash មិនដែលវាយតាម chat"))
     expect("acc:howto → បង្ហាញតំណ Web App", panel.said_since(mark, config.settings.session_web_url))
-    # មិនទាន់ deploy (URL មិនចាប់ផ្តើមដោយ http) → សារត្រូវតែគ្មានតំណ
-    accounts_handlers.settings = dataclasses.replace(config.settings, session_web_url="off")
+    # មិនទាន់ deploy (URL មិនចាប់ផ្តើមដោយ http) → សារ + ប៊ូតុង 🌐 ត្រូវតែលាក់តំណ
+    #  patch ទាំង `config.settings` (keyboards.web_app_row អានពេលហៅ) និង handler របស់ខ្លួន
+    no_url = dataclasses.replace(config.settings, session_web_url="off")
+    settings_backup = config.settings
+    accounts_handlers.settings = no_url
+    config.settings = no_url
     mark = panel.mark()
     await panel.cb("acc:howto")
     expect("URL=off → acc:howto លាក់តំណ Web App", not panel.said_since(mark, "🌐"))
+    mark = panel.mark()
+    await panel.msg("/start")
+    expect("URL=off → /start គ្មានប៊ូតុង 🌐", not panel.said_since(mark, "🌐"))
     accounts_handlers.settings = config.settings
+    config.settings = settings_backup
 
     mark = panel.mark()
     await panel.msg("/cancel", user_id=STAFF)

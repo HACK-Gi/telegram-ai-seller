@@ -6,7 +6,7 @@
 សំណុំតេស្តនេះ patch `_request_code`/`_login` ដូចគ្រីប fake Telethon ក្នុង smoke_test.py ហើយ
 រត់ Flask test_client តាម flow ពិត (send_otp → verify_otp → 2FA → session)។
 
-ច្បាប់ ១៥ ដែលការ test ការពារ៖
+ច្បាប់ ១៨ ដែលការ test ការពារ៖
 
 ១.  ទំព័រ render + `Cache-Control: no-store` គ្រប់ response
 ២.  validation មិនប៉ះបណ្តាញ (api_id លេខ, api_hash hex ៣២, លេខទូរស័ព្ទ E.164)
@@ -23,19 +23,27 @@
 ១៣. គ្រប់ error មាន `detail` កូដខ្លី (ភ្ញៀវរាយការណ៍ → trace បាន) + `/health` version
 ១៤. `SESSION_WEB_SECRET` ខ្វះ → 503 «secret_missing» (Vercel កំហុសពិតប្រាកដ) មិនមែន NameError/500
 ១៥. Fernet key ខុសទ្រង់ទ្រាយ → បង្កើតថ្មី ដោយសុវត្ថិភាព (app មិន dead នៅពេល import)
+១៦. Render blueprint (root + session_web) → bind `$PORT`, /health, plan free, secret sync:false
+១៧. Procfile/requirements/app.py `__main__` ត្រៀមសម្រាប់ Render (gunicorn + PORT + 0.0.0.0)
+១៨. gunicorn boot ពិតតាម startCommand → /health OK (ទើប Render មិនឱ្យតែ 404)
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import socket
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "session_web"))
 
+import yaml  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
 
 # key របស់តេស្តតែមួយ — មិនពឹង .env របស់ម្ចាស់, មិនពឹង Vercel secret
@@ -285,6 +293,103 @@ seen = json.loads(probe.stdout.strip().splitlines()[-1]) if probe.stdout.strip()
 check("គ្មាន env → /health secret_configured False", seen.get("secret") is False)
 check("គ្មាន env → /send_otp 503 detail secret_missing",
       seen.get("code") == 503 and seen.get("detail") == "secret_missing")
+
+print("— Render deploy (blueprint + Procfile + gunicorn + PORT) —")
+START = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120"
+SERVICE_NAME = "bot-auto-sell-make-session"
+
+for blueprint, expected_root_dir in ((ROOT / "render.yaml", "session_web"),
+                                     (ROOT / "session_web" / "render.yaml", None)):
+    where = blueprint.relative_to(ROOT)
+    try:
+        spec = yaml.safe_load(blueprint.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        check(f"{where} ជា YAML ត្រឹមត្រូវ ({type(exc).__name__})", False)
+        continue
+    services = spec.get("services") or []
+    check(f"{where} → service តែមួយ ប្រភេទ web", len(services) == 1 and services[0].get("type") == "web")
+    svc = services[0] if services else {}
+    check(f"{where} → name = {SERVICE_NAME} (ត្រូវនឹង DEFAULT_SESSION_WEB_URL ក្នុង config.py)",
+          svc.get("name") == SERVICE_NAME)
+    check(f"{where} → startCommand bind $PORT (Render ជាកំណត់លេខកំពូលឯង 10000)",
+          svc.get("startCommand") == START)
+    check(f"{where} → runtime python · plan free · region singapore · autoDeploy · /health",
+          svc.get("runtime") == "python" and svc.get("plan") == "free"
+          and svc.get("region") == "singapore" and svc.get("autoDeploy") is True
+          and svc.get("healthCheckPath") == "/health")
+    check(f"{where} → rootDir {expected_root_dir!r}", svc.get("rootDir") == expected_root_dir)
+    env = {item.get("key"): item for item in svc.get("envVars") or []}
+    secret_env = env.get("SESSION_WEB_SECRET") or {}
+    check(f"{where} → SESSION_WEB_SECRET sync:false គ្មាន value (secret មិនដែល commit)",
+          secret_env.get("sync") is False and "value" not in secret_env)
+    check(f"{where} → PYTHON_VERSION 3.11", str(env.get("PYTHON_VERSION", {}).get("value", "")).startswith("3.11"))
+
+procfile = (ROOT / "session_web" / "Procfile").read_text(encoding="utf-8").strip()
+check("Procfile (fallback របស់ platform) ដូច startCommand ខ្លឹមសារ", procfile == f"web: {START}")
+reqs = (ROOT / "session_web" / "requirements.txt").read_text(encoding="utf-8")
+check("requirements.txt មាន gunicorn (Render គ្មាន server របស់ខ្លួនដូច Vercel)", "gunicorn==" in reqs)
+
+main_block = (ROOT / "session_web" / "app.py").read_text(encoding="utf-8").split('__main__')[-1]
+check('app.py `__main__` អាន PORT របស់ Render មុន SESSION_WEB_PORT', 'os.getenv("PORT")' in main_block)
+check('app.py `__main__` bind 0.0.0.0 (host 127.0.0.1 = Render ទៅជា 404/502)', '"0.0.0.0"' in main_block)
+
+page_now = client.get("/").get_data(as_text=True)
+check('clearStatus លែងដាក់ style.display="none" (inline style បិទសារ «✅ ជោគជ័យ» ទាំងស្រុង)',
+      'box.style.display = "none"' not in page_now)
+check("showStep រំកិលទៅប្រអប់ Session (ទូរស័ព្ម: ប្រអប់នៅក្រោម fold ធ្វើឱ្យគេគិតថាមិនបង្ហាញ)",
+      'if (id !== "step-creds") $(id).scrollIntoView' in page_now)
+check("btn-copy ប្រាប់ខុស/ត្រូវ ជំនួសអះអាងថាចម្លងបាន (WebView បិទ clipboard API)",
+      "copied = document.execCommand" in page_now and "បានចម្លង!" in page_now
+      and "មិនអនុញ្ញាតឱ្យចម្លង" in page_now)
+
+try:
+    import gunicorn  # noqa: F401
+
+    have_gunicorn = True
+except ImportError:
+    have_gunicorn = False
+if not have_gunicorn:
+    print("  ⏭️  រំលង gunicorn live test (វេណមិនទាន់មាន gunicorn)")
+else:
+    with socket.socket() as finder:
+        finder.bind(("127.0.0.1", 0))
+        free_port = finder.getsockname()[1]
+    # platform ជាអ្នកជំនួស `$PORT` ពិត — ទីនេះ substitute ដោយដៃ រួចរត់ command ដូចគ្នា
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "gunicorn", "app:app", "--bind", f"127.0.0.1:{free_port}",
+         "--workers", "1", "--timeout", "120"],
+        cwd=str(ROOT / "session_web"),
+        env={**os.environ, "PORT": str(free_port)},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    served: dict[str, str] = {}
+    try:
+        deadline = time.time() + 25
+        while time.time() < deadline and len(served) < 2:
+            for path, key in (("/health", "health"), ("/", "page")):
+                if key in served:
+                    continue
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{free_port}{path}", timeout=2) as resp:
+                        served[key] = resp.read().decode()
+                except (urllib.error.URLError, OSError):
+                    pass
+            if len(served) < 2:
+                time.sleep(0.5)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:  # pragma: no cover
+            proc.kill()
+    health_json = json.loads(served.get("health") or "{}")
+    check("gunicorn boot ពិតតាម startCommand → /health ok (Render អាស្រ័យលើចំណុចនេះ)",
+          health_json.get("ok") is True)
+    check("gunicorn mode → SESSION_WEB_SECRET អានបាន (secret_configured true)",
+          health_json.get("secret_configured") is True)
+    check("gunicorn mode → ទំព័រ / render មានប្រអប់ Session + ប៊ូតុង ចម្លង",
+          'id="session"' in (served.get("page") or "") and "ចម្លង" in (served.get("page") or ""))
 
 print()
 total = passed + len(failed)

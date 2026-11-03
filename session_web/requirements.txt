@@ -4,3 +4,6 @@ flask-limiter==4.1.1
 Telethon==1.45.0
 cryptography==50.0.2
 python-dotenv==1.2.4
+# Render (buildCommand `pip install -r requirements.txt` + startCommand gunicorn) ត្រូវការ
+# WSGI server — Vercel មាន server របស់ខ្លួន ទើបធ្លាប់មិនដែលដំឡើង gunicorn នៅទីនេះ។
+gunicorn==22.0.0

@@ -61,6 +61,14 @@ async def intro_text(scope: Scope) -> str:
         )
     elif not accounts:
         who += "\n⚠️ <i>ហាងរបស់អ្នកទំនេរ — ចុច ➕ បន័ែមគណនី ឬវាយ <code>/addsession</code> ដើម្បីចាប់ផ្តើម</i>"
+    web = keyboards.web_app_row() if not accounts else None
+    if web:
+        # ភ្ញៀវថ្មីភាគច្រើនមិនរត់ Python លើកុំព្យូទ័រខ្លួន → ត្រូវការ Web App ជាជំហានទី ១
+        #  source of truth តែមួយជាមួយប៊ូតុង 🌐 ក្នុងមេនុ (URL មិន deploy → លាក់ទាំងសងខាង)
+        who += (
+            f'\n🌐 <i>បង្កើត Session String តាម Web App → <a href="{esc(web[0][1])}">ចុចទីនេះ</a>'
+            " (ឬប្រើប៊ូតុងខាងក្រោម)</i>"
+        )
     return INTRO.replace("{who}", who)
 
 HELP = """📖 <b>Commands សម្រាប់ម្ចាស់ហាង</b>
